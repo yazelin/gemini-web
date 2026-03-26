@@ -3,7 +3,8 @@ set -euo pipefail
 
 SERVICE_NAME="gemini-image-api"
 WORK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-USER="$(whoami)"
+USER="${SUDO_USER:-$(whoami)}"
+USER_HOME="$(eval echo ~${USER})"
 
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
@@ -18,6 +19,8 @@ ExecStart=${WORK_DIR}/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8070
 Restart=on-failure
 RestartSec=10
 Environment=HEADLESS=true
+Environment=HOME=${USER_HOME}
+Environment=PLAYWRIGHT_BROWSERS_PATH=${USER_HOME}/.cache/ms-playwright
 
 [Install]
 WantedBy=multi-user.target

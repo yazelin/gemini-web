@@ -1,6 +1,5 @@
 """環境變數設定"""
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 

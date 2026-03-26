@@ -115,6 +115,16 @@ original = (watermarked - alpha × logo) / (1 - alpha)
 
 ## AI Agent 整合
 
+本工具提供兩種 AI Agent 整合方式：
+
+### AGENTS.md（通用）
+
+Repo 根目錄的 `AGENTS.md` 包含完整的 AI Agent 使用指引，任何 AI（Claude Code、Cursor、Windsurf 等）讀到就知道怎麼用。
+
+### Claude Code Skill
+
+`.claude/skills/generate-image.md` 提供 Claude Code 專用的技能定義，可直接作為工具使用。
+
 ### CLI 呼叫
 
 ```bash

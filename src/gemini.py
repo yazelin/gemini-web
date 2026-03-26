@@ -195,7 +195,7 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                     await btn.hover()
                     await asyncio.sleep(0.3)
                     # 用 JS click（更可靠）+ 長 timeout（伺服器需要時間生成原尺寸）
-                    async with page.expect_download(timeout=120_000) as download_info:
+                    async with page.expect_download(timeout=240_000) as download_info:
                         await page.evaluate("btn => btn.click()", btn)
                     download = await download_info.value
                     logger.info("圖片 %d：下載事件觸發，等待檔案寫入...", i)

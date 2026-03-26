@@ -44,7 +44,7 @@ class Settings:
         self.host: str = os.getenv("HOST", "0.0.0.0")
         self.port: int = _int(os.getenv("PORT"), 8070)
         self.queue_max_size: int = _int(os.getenv("QUEUE_MAX_SIZE"), 10)
-        self.default_timeout: int = _int(os.getenv("DEFAULT_TIMEOUT"), 180)
+        self.default_timeout: int = _int(os.getenv("DEFAULT_TIMEOUT"), 240)
 
         # 心跳
         self.heartbeat_interval: int = _int(os.getenv("HEARTBEAT_INTERVAL"), 300)

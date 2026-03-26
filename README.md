@@ -2,11 +2,9 @@
 
 使用 Playwright 自動化 Gemini 網頁版生成含繁體中文文字的圖片。提供 **CLI 工具**和 **HTTP API** 兩種使用方式。
 
-自動移除 Gemini 可見水印（使用 [GeminiWatermarkTool](https://github.com/allenk/GeminiWatermarkTool)）。
+自動移除 Gemini 可見水印（Reverse Alpha Blending，基於 [gemini-watermark-remover](https://github.com/journey-ad/gemini-watermark-remover)）。
 
 ## 安裝
-
-### 一行安裝（推薦）
 
 ```bash
 # uv（推薦）
@@ -19,58 +17,50 @@ pip install gemini-image && gemini-image install
 pipx install gemini-image && gemini-image install
 ```
 
-安裝完成後 `gemini-image` 指令全域可用。
-
-### 從原始碼安裝
-
-```bash
-git clone https://github.com/yazelin/gemini-image.git
-cd gemini-image
-bash scripts/setup.sh
-```
+`gemini-image install` 會安裝 Chromium 瀏覽器（Playwright）。
 
 ## 首次登入 Google
-
-首次使用需手動登入一次，之後 session 自動持久化：
 
 ```bash
 gemini-image login
 ```
 
-在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，按 Enter 關閉。
+在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，按 Enter 關閉。登入狀態存在 `~/.gemini-image/profiles/`，之後不需要重新登入。
 
 ## 使用方式
 
 ### CLI 工具
 
 ```bash
-# 生成圖片
+# 生成圖片（自動 headless）
 gemini-image generate "A cute cat sitting on a windowsill" -o cat.png
 
-# 生成圖片 + 自動去水印
+# 生成 + 去水印
 gemini-image generate "A poster with text '歡迎光臨'" -o poster.png --no-watermark
 
-# 查看說明
-gemini-image --help
-gemini-image generate --help
+# 詳細 log
+gemini-image generate "畫一隻柴犬" -o shiba.png --no-watermark -v
 ```
+
+Prompt 不含「畫」「draw」「generate」等關鍵字時，會自動加上 `Generate an image:` 前綴。
 
 ### HTTP API
 
 ```bash
-# 啟動 API 服務
+# 啟動服務
 gemini-image serve
-
-# 或直接用 uvicorn
-uv run uvicorn src.main:app --host 0.0.0.0 --port 8070
+# 或
+gemini-image serve --host 0.0.0.0 --port 8070
 ```
+
+API 模式自動去水印、自動下載原尺寸圖片。
 
 #### POST /api/generate
 
 ```bash
 curl -X POST http://localhost:8070/api/generate \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "A poster with text 歡迎來到台北, modern design"}'
+  -d '{"prompt": "畫一張台北101海報"}'
 ```
 
 回傳：
@@ -80,11 +70,9 @@ curl -X POST http://localhost:8070/api/generate \
   "success": true,
   "images": ["data:image/png;base64,..."],
   "prompt": "...",
-  "elapsed_seconds": 27.8
+  "elapsed_seconds": 45.2
 }
 ```
-
-API 模式會自動去水印。
 
 #### GET /api/health
 
@@ -105,21 +93,35 @@ API 模式會自動去水印。
 ### systemd 服務部署
 
 ```bash
-# 確認 .env 中 HEADLESS=true
 sudo bash scripts/install-service.sh
 ```
 
+## 去水印
+
+使用 **Reverse Alpha Blending** 演算法，數學精確還原被水印覆蓋的像素：
+
+```
+original = (watermarked - alpha × logo) / (1 - alpha)
+```
+
+- 純 Python 實作（Pillow + NumPy），跨平台
+- 大圖（寬高 > 1024）：96×96 水印，64px 邊距
+- 小圖：48×48 水印，32px 邊距
+- API 模式自動去水印
+- CLI 模式加 `--no-watermark`
+- 不可見的 SynthID 浮水印無法移除
+
+基於 [gemini-watermark-remover](https://github.com/journey-ad/gemini-watermark-remover) 和 [Python 版本](https://github.com/VimalMollyn/Gemini-Watermark-Remover-Python)。
+
 ## AI Agent 整合
 
-### 作為 MCP 工具
-
-在你的 AI agent 中呼叫 CLI：
+### CLI 呼叫
 
 ```bash
 gemini-image generate "detailed prompt here" -o /path/to/output.png --no-watermark
 ```
 
-### 作為 HTTP API
+### HTTP API
 
 ```python
 import httpx
@@ -133,32 +135,20 @@ if data["success"]:
 
 | 變數 | 說明 | 預設 |
 |------|------|------|
-| `HEADLESS` | 無頭模式（首次登入設 false） | `false` |
-| `PROFILE_DIR` | 瀏覽器 session 目錄 | `profiles` |
+| `HEADLESS` | 無頭模式 | `false`（CLI generate 強制 `true`） |
+| `PROFILE_DIR` | 瀏覽器 session 目錄 | `~/.gemini-image/profiles` |
 | `GEMINI_URL` | Gemini 網址 | `https://gemini.google.com/app` |
 | `PORT` | API 服務埠 | `8070` |
 | `DEFAULT_TIMEOUT` | 生圖超時秒數 | `180` |
 | `QUEUE_MAX_SIZE` | 最大排隊數 | `10` |
-| `HEARTBEAT_INTERVAL` | 心跳檢查間隔秒數 | `300` |
 
-## 去水印
+## 從原始碼安裝
 
-使用 [GeminiWatermarkTool](https://github.com/allenk/GeminiWatermarkTool)（反向 Alpha 混合 + AI 降噪）移除 Gemini 右下角可見水印。
-
-- **首次使用時自動下載**對應平台的 binary（Windows/Linux/macOS）
-- 快取位置：`~/.gemini-image/bin/`
-- API 模式：自動去水印
-- CLI 模式：加 `--no-watermark` 參數
-
-注意：不可見的 SynthID 浮水印無法移除。
-
-## 已知限制
-
-- 一次只能處理一個生圖請求（其他排隊）
-- Google 登入過期需手動重新登入（`gemini-image login`）
-- Gemini 改版可能導致 DOM selector 失效，需手動更新 `src/selectors.py`
-- 違反 Google 服務條款，帳號有被封風險
-- 生圖耗時約 20-60 秒，視 Gemini 伺服器負載而定
+```bash
+git clone https://github.com/yazelin/gemini-image.git
+cd gemini-image
+bash scripts/setup.sh
+```
 
 ## 開發
 
@@ -166,3 +156,15 @@ if data["success"]:
 uv sync --extra dev
 uv run pytest -v
 ```
+
+## 已知限制
+
+- 一次只能處理一個生圖請求（其他排隊等待）
+- Google 登入過期需手動重新登入（`gemini-image login`）
+- Gemini 改版可能導致 DOM selector 失效，需更新 `src/selectors.py`
+- 違反 Google 服務條款，帳號有被封風險
+- 生圖耗時約 30-120 秒，視 Gemini 伺服器負載而定
+
+## 授權
+
+MIT License

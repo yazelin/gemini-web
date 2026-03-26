@@ -1,144 +1,121 @@
-"""去水印 — 自動下載並呼叫 GeminiWatermarkTool CLI 移除可見水印"""
-import io
+"""去水印 — Reverse Alpha Blending 移除 Gemini 可見水印
+
+基於 https://github.com/VimalMollyn/Gemini-Watermark-Remover-Python
+原始演算法：https://github.com/journey-ad/gemini-watermark-remover
+
+公式：original = (watermarked - alpha * logo) / (1 - alpha)
+"""
 import logging
-import platform
-import shutil
-import stat
-import subprocess
-import zipfile
+from io import BytesIO
 from pathlib import Path
+
+import numpy as np
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-_GWT_NAME = "GeminiWatermarkTool"
-_GWT_VERSION = "v0.2.6"
-_GWT_REPO = "allenk/GeminiWatermarkTool"
+# alpha map 檔案位置
+_ASSETS_DIR = Path(__file__).parent / "assets"
 
-# 快取目錄：~/.gemini-image/bin/
-_CACHE_DIR = Path.home() / ".gemini-image" / "bin"
-
-# 平台 → release asset 名稱對照
-_PLATFORM_ASSETS = {
-    "linux": "GeminiWatermarkTool-Linux-x64.zip",
-    "darwin": "GeminiWatermarkTool-macOS-Universal.zip",
-    "windows": "GeminiWatermarkTool-Windows-x64.zip",
-}
+# 快取
+_ALPHA_MAPS: dict[int, np.ndarray] = {}
 
 
-def _get_platform() -> str:
-    system = platform.system().lower()
-    if system == "linux":
-        return "linux"
-    elif system == "darwin":
-        return "darwin"
-    elif system == "windows":
-        return "windows"
-    return system
+def _load_alpha_map(size: int) -> np.ndarray:
+    """載入 alpha map（從水印擷取圖計算）"""
+    if size in _ALPHA_MAPS:
+        return _ALPHA_MAPS[size]
+
+    bg_path = _ASSETS_DIR / f"bg_{size}.png"
+    if not bg_path.exists():
+        raise FileNotFoundError(f"Alpha map 不存在：{bg_path}")
+
+    bg_img = Image.open(bg_path).convert("RGB")
+    bg_array = np.array(bg_img, dtype=np.float32)
+    # 取 RGB 通道最大值，正規化到 [0, 1]
+    alpha_map = np.max(bg_array, axis=2) / 255.0
+    _ALPHA_MAPS[size] = alpha_map
+    return alpha_map
 
 
-def _get_exe_name() -> str:
-    if _get_platform() == "windows":
-        return f"{_GWT_NAME}.exe"
-    return _GWT_NAME
+def _detect_config(width: int, height: int) -> dict:
+    """根據圖片尺寸決定水印大小和邊距
+
+    Gemini 規則：
+    - 寬高都 > 1024：96x96 logo，64px 邊距
+    - 否則：48x48 logo，32px 邊距
+    """
+    if width > 1024 and height > 1024:
+        return {"logo_size": 96, "margin": 64}
+    return {"logo_size": 48, "margin": 32}
 
 
-def _download_gwt() -> str | None:
-    """從 GitHub Releases 下載對應平台的 GeminiWatermarkTool"""
-    plat = _get_platform()
-    asset_name = _PLATFORM_ASSETS.get(plat)
-    if not asset_name:
-        logger.warning("不支援的平台：%s", plat)
-        return None
-
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    exe_path = _CACHE_DIR / _get_exe_name()
-
-    url = f"https://github.com/{_GWT_REPO}/releases/download/{_GWT_VERSION}/{asset_name}"
-    logger.info("下載去水印工具：%s", url)
-
-    try:
-        import httpx
-        resp = httpx.get(url, follow_redirects=True, timeout=60)
-        resp.raise_for_status()
-
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            exe_names = [_GWT_NAME, f"{_GWT_NAME}.exe"]
-            for name in zf.namelist():
-                basename = Path(name).name
-                if basename in exe_names:
-                    data = zf.read(name)
-                    exe_path.write_bytes(data)
-                    if plat != "windows":
-                        exe_path.chmod(exe_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-                    logger.info("去水印工具已安裝：%s", exe_path)
-                    return str(exe_path)
-
-        logger.warning("zip 中找不到執行檔")
-        return None
-    except Exception as e:
-        logger.warning("下載去水印工具失敗：%s", e)
-        return None
-
-
-def _find_gwt() -> str | None:
-    """找到 GeminiWatermarkTool 執行檔（必要時自動下載）"""
-    exe_name = _get_exe_name()
-
-    # 1. 快取目錄
-    cached = _CACHE_DIR / exe_name
-    if cached.exists() and cached.is_file():
-        return str(cached)
-
-    # 2. PATH 中
-    found = shutil.which(_GWT_NAME)
-    if found:
-        return found
-
-    # 3. 自動下載
-    return _download_gwt()
-
-
-def remove_watermark(input_path: str, output_path: str | None = None, denoise: str = "ai") -> str:
-    """移除圖片可見水印
+def remove_watermark(input_path: str, output_path: str | None = None) -> str:
+    """移除圖片右下角 Gemini 水印
 
     Args:
         input_path: 輸入圖片路徑
         output_path: 輸出路徑（預設覆蓋原檔）
-        denoise: 去噪方法（ai/ns/telea/soft/off）
 
     Returns:
         輸出路徑（失敗時回傳原檔路徑）
     """
-    gwt = _find_gwt()
-    if not gwt:
-        logger.warning("GeminiWatermarkTool 未安裝且無法下載，跳過去水印")
-        return input_path
-
     if output_path is None:
         output_path = input_path
 
-    cmd = [
-        gwt,
-        "--no-banner",
-        "--input", input_path,
-        "--output", output_path,
-        "--remove",
-        "--denoise", denoise,
-    ]
-
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0:
-            logger.info("去水印完成：%s", output_path)
-            return output_path
-        else:
-            logger.info("去水印工具回傳 code %d：%s", result.returncode, result.stderr.strip())
+        img = Image.open(input_path).convert("RGB")
+        width, height = img.size
+        config = _detect_config(width, height)
+        logo_size = config["logo_size"]
+        margin = config["margin"]
+
+        # 水印位置（右下角）
+        x = width - margin - logo_size
+        y = height - margin - logo_size
+
+        if x < 0 or y < 0:
+            logger.info("圖片太小，跳過去水印")
             return input_path
-    except subprocess.TimeoutExpired:
-        logger.warning("去水印超時")
-        return input_path
+
+        logger.info(
+            "去水印：%dx%d, logo=%dx%d, pos=(%d,%d)",
+            width, height, logo_size, logo_size, x, y,
+        )
+
+        # 載入 alpha map
+        alpha_map = _load_alpha_map(logo_size)
+
+        # Reverse Alpha Blending
+        img_array = np.array(img, dtype=np.float32)
+        ALPHA_THRESHOLD = 0.002
+        MAX_ALPHA = 0.99
+        LOGO_VALUE = 255.0
+
+        for row in range(logo_size):
+            for col in range(logo_size):
+                alpha = alpha_map[row, col]
+                if alpha < ALPHA_THRESHOLD:
+                    continue
+                alpha = min(alpha, MAX_ALPHA)
+                one_minus_alpha = 1.0 - alpha
+                for c in range(3):
+                    watermarked = img_array[y + row, x + col, c]
+                    original = (watermarked - alpha * LOGO_VALUE) / one_minus_alpha
+                    img_array[y + row, x + col, c] = max(0, min(255, round(original)))
+
+        result = Image.fromarray(img_array.astype(np.uint8), "RGB")
+
+        # 儲存（保持原格式品質）
+        ext = Path(input_path).suffix.lower()
+        if ext in (".jpg", ".jpeg"):
+            result.save(output_path, quality=95)
+        else:
+            result.save(output_path)
+
+        logger.info("去水印完成：%s", output_path)
+        return output_path
+
     except Exception as e:
         logger.warning("去水印失敗：%s", e)
         return input_path

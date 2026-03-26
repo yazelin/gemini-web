@@ -15,7 +15,7 @@ def test_default_settings(monkeypatch):
     assert s.headless is False
     assert s.port == 8070
     assert s.queue_max_size == 10
-    assert s.default_timeout == 180
+    assert s.default_timeout == 240
     assert s.heartbeat_interval == 300
     assert s.gemini_url == "https://gemini.google.com/app"
     assert s.stealth_language == "zh-TW,zh,en-US,en"

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "gemini-image-api"
+name = "gemini-image"
 version = "0.1.0"
 description = "Gemini 圖片生成 API 服務"
 requires-python = ">=3.11"

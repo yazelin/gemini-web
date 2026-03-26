@@ -117,11 +117,27 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
         except Exception:
             pass
 
-        # 2. 清空並輸入 prompt
+        # 2. 輸入 prompt（用 JS 直接寫入 + 模擬 Ctrl+V 貼上事件）
         await input_el.click()
         await asyncio.sleep(0.3)
-        # 用 keyboard.type 模擬逐字輸入（比 fill 更可靠）
-        await page.keyboard.type(prompt, delay=30)
+        # 透過 JS 模擬 clipboard paste（繞過 headless clipboard 限制）
+        await input_el.evaluate("""(el, text) => {
+            el.focus();
+            // 建立 paste 事件，帶上文字資料
+            const dt = new DataTransfer();
+            dt.setData('text/plain', text);
+            const pasteEvent = new ClipboardEvent('paste', {
+                clipboardData: dt,
+                bubbles: true,
+                cancelable: true,
+            });
+            el.dispatchEvent(pasteEvent);
+            // 備用：如果 paste 事件沒觸發，直接設定 innerText
+            if (!el.textContent || el.textContent.trim().length === 0) {
+                el.innerText = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }""", prompt)
         await asyncio.sleep(1)
 
         # 3. 送出（按 Enter）

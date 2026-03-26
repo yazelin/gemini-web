@@ -1,9 +1,13 @@
 """環境變數設定"""
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# 預設資料目錄：~/.gemini-image/
+_DEFAULT_DATA_DIR = str(Path.home() / ".gemini-image")
 
 
 def _bool(val: str | None, default: bool = False) -> bool:
@@ -27,7 +31,9 @@ class Settings:
     def __init__(self) -> None:
         # 瀏覽器
         self.headless: bool = _bool(os.getenv("HEADLESS"), False)
-        self.profile_dir: str = os.getenv("PROFILE_DIR", "profiles")
+        self.profile_dir: str = os.getenv(
+            "PROFILE_DIR", str(Path(_DEFAULT_DATA_DIR) / "profiles")
+        )
         self.gemini_url: str = os.getenv("GEMINI_URL", "https://gemini.google.com/app")
 
         # Stealth

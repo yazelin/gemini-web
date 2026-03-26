@@ -4,8 +4,13 @@ import pytest
 from src.config import Settings
 
 
-def test_default_settings():
+def test_default_settings(monkeypatch):
     """預設值應正確"""
+    from pathlib import Path
+    # 清除 .env 影響
+    monkeypatch.delenv("PROFILE_DIR", raising=False)
+    monkeypatch.delenv("HEADLESS", raising=False)
+    monkeypatch.delenv("DEFAULT_TIMEOUT", raising=False)
     s = Settings()
     assert s.headless is False
     assert s.port == 8070
@@ -15,6 +20,8 @@ def test_default_settings():
     assert s.gemini_url == "https://gemini.google.com/app"
     assert s.stealth_language == "zh-TW,zh,en-US,en"
     assert s.stealth_timezone == "Asia/Taipei"
+    # profile_dir 應為絕對路徑（~/.gemini-image/profiles）
+    assert Path(s.profile_dir).is_absolute()
 
 
 def test_settings_from_env(monkeypatch):

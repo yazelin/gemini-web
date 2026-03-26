@@ -144,9 +144,10 @@ if data["success"]:
 
 使用 [GeminiWatermarkTool](https://github.com/allenk/GeminiWatermarkTool)（反向 Alpha 混合 + AI 降噪）移除 Gemini 右下角可見水印。
 
+- **首次使用時自動下載**對應平台的 binary（Windows/Linux/macOS）
+- 快取位置：`~/.gemini-image/bin/`
 - API 模式：自動去水印
 - CLI 模式：加 `--no-watermark` 參數
-- Binary 位於 `bin/GeminiWatermarkTool`
 
 注意：不可見的 SynthID 浮水印無法移除。
 

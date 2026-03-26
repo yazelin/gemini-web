@@ -6,3 +6,4 @@ profiles/
 dist/
 .venv/
 logs/
+bin/

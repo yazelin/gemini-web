@@ -208,18 +208,15 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
 
 
 async def new_chat(page: Page) -> bool:
-    """點擊「新對話」重置 Gemini 狀態"""
+    """重置 Gemini 對話狀態 — 直接導航到首頁（最可靠）"""
     try:
-        btn = await page.query_selector(SELECTORS["new_chat"])
-        if btn:
-            await btn.click()
-            await asyncio.sleep(1)
-            logger.info("已重置對話")
-            return True
-        # 備用：直接導航到 Gemini 首頁
         await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded")
-        await asyncio.sleep(3)
-        logger.info("已重新導航至 Gemini 首頁")
+        # 等待輸入框出現，確認頁面就緒
+        await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=15_000
+        )
+        await asyncio.sleep(1)
+        logger.info("已重置對話（導航至首頁）")
         return True
     except Exception as e:
         logger.warning("重置對話失敗：%s", e)

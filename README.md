@@ -6,27 +6,37 @@
 
 ## 安裝
 
+### 一行安裝（推薦）
+
 ```bash
-git clone <repo-url> gemini-image-api
-cd gemini-image-api
-uv sync
-uv run playwright install chromium
-cp .env.example .env
+uv tool install git+https://github.com/yazelin/gemini-image.git && playwright install chromium
+```
+
+或用 pipx：
+
+```bash
+pipx install git+https://github.com/yazelin/gemini-image.git && playwright install chromium
+```
+
+安裝完成後 `gemini-image` 指令全域可用。
+
+### 從原始碼安裝
+
+```bash
+git clone https://github.com/yazelin/gemini-image.git
+cd gemini-image
+bash scripts/setup.sh
 ```
 
 ## 首次登入 Google
 
-需要先手動登入一次，之後瀏覽器 session 會自動持久化。
+首次使用需手動登入一次，之後 session 自動持久化：
 
 ```bash
-# 方法 A：使用 CLI
-uv run gemini-image login
-
-# 方法 B：直接啟動 headed 模式
-HEADLESS=false uv run uvicorn src.main:app --port 8070
+gemini-image login
 ```
 
-在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，然後關閉。
+在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，按 Enter 關閉。
 
 ## 使用方式
 
@@ -34,21 +44,21 @@ HEADLESS=false uv run uvicorn src.main:app --port 8070
 
 ```bash
 # 生成圖片
-uv run gemini-image generate "A cute cat sitting on a windowsill" -o cat.png
+gemini-image generate "A cute cat sitting on a windowsill" -o cat.png
 
 # 生成圖片 + 自動去水印
-uv run gemini-image generate "A poster with text '歡迎光臨'" -o poster.png --no-watermark
+gemini-image generate "A poster with text '歡迎光臨'" -o poster.png --no-watermark
 
 # 查看說明
-uv run gemini-image --help
-uv run gemini-image generate --help
+gemini-image --help
+gemini-image generate --help
 ```
 
 ### HTTP API
 
 ```bash
 # 啟動 API 服務
-uv run gemini-image serve
+gemini-image serve
 
 # 或直接用 uvicorn
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8070

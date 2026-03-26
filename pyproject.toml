@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gemini-image"
-version = "0.3.0"
+version = "0.3.1"
 description = "Gemini 圖片生成 API 服務"
 requires-python = ">=3.11"
 dependencies = [
@@ -25,8 +25,7 @@ gemini-image = "src.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
-[tool.hatch.build.targets.wheel.force-include]
-"src/assets" = "src/assets"
+artifacts = ["src/assets/*.png"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -246,6 +246,16 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
     if not prompt:
         raise HTTPException(status_code=400, detail="No text content in request")
 
+    # 偵測 google_search tool → 注入搜尋觸發詞
+    tools = body.get("tools", [])
+    has_google_search = any(
+        "google_search" in t or "googleSearch" in t
+        for t in tools
+        if isinstance(t, dict)
+    )
+    if has_google_search:
+        prompt = f"請搜尋最新的即時資訊來回答以下問題（{time.strftime('%Y-%m-%d')}）：\n\n{prompt}"
+
     # 判斷是圖片生成還是文字對話
     gen_config = body.get("generationConfig", {})
     response_mime = gen_config.get("responseMimeType", "")

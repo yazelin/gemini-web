@@ -1,10 +1,10 @@
 description = "使用 Gemini 文字對話（文字輸入，文字回覆）"
 
 prompt = """
-Send the user's prompt to Gemini using gemini-image chat command and return the text response.
+Send the user's prompt to Gemini using gemini-web chat command and return the text response.
 
 Run this shell command:
-  gemini-image chat "<prompt>"
+  gemini-web chat "<prompt>"
 
 Or via HTTP API:
   curl -X POST http://localhost:8070/api/chat -H "Content-Type: application/json" -d '{"prompt": "<prompt>"}'

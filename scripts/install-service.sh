@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="gemini-image-api"
+SERVICE_NAME="gemini-web-api"
 WORK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 USER="${SUDO_USER:-$(whoami)}"
 USER_HOME="$(eval echo ~${USER})"
 
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
-Description=Gemini Image API
+Description=Gemini Web API
 After=network.target
 
 [Service]

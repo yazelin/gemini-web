@@ -24,19 +24,19 @@ def _install_commands():
 
     installed = []
 
-    # Claude Code: 複製 .md 到 ~/.claude/commands/gemini-image/
+    # Claude Code: 複製 .md 到 ~/.claude/commands/gemini-web/
     claude_dir = Path.home() / ".claude"
     if claude_dir.exists():
-        dest = claude_dir / "commands" / "gemini-image"
+        dest = claude_dir / "commands" / "gemini-web"
         dest.mkdir(parents=True, exist_ok=True)
         for f in commands_src.glob("*.md"):
             shutil.copy2(f, dest / f.name)
         installed.append(f"Claude Code → {dest}")
 
-    # Gemini CLI: 複製 .toml 到 ~/.gemini/commands/gemini-image/
+    # Gemini CLI: 複製 .toml 到 ~/.gemini/commands/gemini-web/
     gemini_dir = Path.home() / ".gemini"
     if gemini_dir.exists():
-        dest = gemini_dir / "commands" / "gemini-image"
+        dest = gemini_dir / "commands" / "gemini-web"
         dest.mkdir(parents=True, exist_ok=True)
         for f in commands_src.glob("*.toml"):
             shutil.copy2(f, dest / f.name)
@@ -46,10 +46,10 @@ def _install_commands():
         print("\nAI Agent commands 已安裝：")
         for line in installed:
             print(f"  {line}")
-        print("可用指令：/gemini-image, /generate")
+        print("可用指令：/gemini-web, /generate")
     else:
         print("\n未偵測到 Claude Code 或 Gemini CLI，跳過 commands 安裝")
-        print("如需手動安裝，請參考：https://github.com/yazelin/gemini-image#ai-agent-整合")
+        print("如需手動安裝，請參考：https://github.com/yazelin/gemini-web#ai-agent-整合")
 
 
 def _setup_logging(verbose: bool = False):
@@ -90,7 +90,7 @@ async def _do_chat(prompt: str, verbose: bool):
 
         logged_in = await bm.is_logged_in(wait=True)
         if not logged_in:
-            print("錯誤：尚未登入 Google，請先執行 `gemini-image login`", file=sys.stderr)
+            print("錯誤：尚未登入 Google，請先執行 `gemini-web login`", file=sys.stderr)
             sys.exit(1)
 
         print(f"提問中... prompt: {prompt[:60]}{'...' if len(prompt) > 60 else ''}")
@@ -129,7 +129,7 @@ async def _do_generate(prompt: str, output: str, no_watermark: bool, verbose: bo
         # 檢查登入狀態（等待頁面完全載入）
         logged_in = await bm.is_logged_in(wait=True)
         if not logged_in:
-            print("錯誤：尚未登入 Google，請先執行 `gemini-image login`", file=sys.stderr)
+            print("錯誤：尚未登入 Google，請先執行 `gemini-web login`", file=sys.stderr)
             sys.exit(1)
 
         print(f"生成中... prompt: {prompt[:60]}{'...' if len(prompt) > 60 else ''}")
@@ -184,7 +184,7 @@ async def _do_generate(prompt: str, output: str, no_watermark: bool, verbose: bo
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="gemini-image",
+        prog="gemini-web",
         description="Gemini Image — AI 圖片生成 CLI 工具",
     )
     sub = parser.add_subparsers(dest="command", help="可用指令")
@@ -224,7 +224,7 @@ def main():
         # 2. 安裝 AI Agent commands
         _install_commands()
 
-        print("\n下一步：執行 `gemini-image login` 登入 Google")
+        print("\n下一步：執行 `gemini-web login` 登入 Google")
 
     elif args.command == "login":
         asyncio.run(_do_login())

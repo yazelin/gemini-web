@@ -25,7 +25,7 @@
 ## 目錄結構
 
 ```
-gemini-image-api/
+gemini-web-api/
 ├── src/
 │   ├── main.py              # FastAPI 入口、lifespan 管理
 │   ├── config.py            # 環境變數設定
@@ -208,7 +208,7 @@ HEARTBEAT_INTERVAL=300      # 秒
 ### 首次啟動（手動登入）
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 uv sync
 playwright install chromium
 HEADLESS=false uv run uvicorn src.main:app --port 8070
@@ -229,8 +229,8 @@ uv run uvicorn src.main:app --host 0.0.0.0 --port 8070
 ### 部署位置
 
 ```
-~/SDD/gemini-image-api/     # 獨立 repo，獨立部署
-~/SDD/ctos-lite/            # 透過內網 HTTP 呼叫 gemini-image-api
+~/SDD/gemini-web-api/     # 獨立 repo，獨立部署
+~/SDD/ctos-lite/            # 透過內網 HTTP 呼叫 gemini-web-api
 ```
 
 ## 已知風險與限制

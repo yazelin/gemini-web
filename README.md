@@ -1,6 +1,6 @@
 # Gemini Image
 
-> **快速安裝：** `uv tool install gemini-image && gemini-image install`
+> **快速安裝：** `uv tool install gemini-web && gemini-web install`
 
 使用 Playwright 自動化 Gemini 網頁版，提供**圖片生成**和**文字對話**功能。支援 **CLI 工具**和 **HTTP API** 兩種使用方式。
 
@@ -15,31 +15,31 @@
 curl -LsSf https://astral.sh/uv/install.sh | sh              # macOS / Linux
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
 
-# 2. 安裝 gemini-image
-uv tool install gemini-image && gemini-image install
+# 2. 安裝 gemini-web
+uv tool install gemini-web && gemini-web install
 ```
 
 備選方式（效果相同）：
 ```bash
-pipx install gemini-image && gemini-image install
+pipx install gemini-web && gemini-web install
 ```
 
-`gemini-image install` 會安裝 Chromium 瀏覽器（Playwright）。
+`gemini-web install` 會安裝 Chromium 瀏覽器（Playwright）。
 
 ### 已經用 pip 裝過？
 
 ```bash
-pip uninstall gemini-image -y
-uv tool install gemini-image && gemini-image install
+pip uninstall gemini-web -y
+uv tool install gemini-web && gemini-web install
 ```
 
 ## 首次登入 Google
 
 ```bash
-gemini-image login
+gemini-web login
 ```
 
-在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，按 Enter 關閉。登入狀態存在 `~/.gemini-image/profiles/`，之後不需要重新登入。
+在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，按 Enter 關閉。登入狀態存在 `~/.gemini-web/profiles/`，之後不需要重新登入。
 
 ## 使用方式
 
@@ -47,16 +47,16 @@ gemini-image login
 
 ```bash
 # 文字對話
-gemini-image chat "解釋量子力學"
+gemini-web chat "解釋量子力學"
 
 # 生成圖片（自動 headless）
-gemini-image generate "A cute cat sitting on a windowsill" -o cat.png
+gemini-web generate "A cute cat sitting on a windowsill" -o cat.png
 
 # 生成 + 去水印
-gemini-image generate "A poster with text '歡迎光臨'" -o poster.png --no-watermark
+gemini-web generate "A poster with text '歡迎光臨'" -o poster.png --no-watermark
 
 # 詳細 log
-gemini-image generate "畫一隻柴犬" -o shiba.png --no-watermark -v
+gemini-web generate "畫一隻柴犬" -o shiba.png --no-watermark -v
 ```
 
 Prompt 不含「畫」「draw」「generate」等關鍵字時，會自動加上 `Generate an image:` 前綴。
@@ -65,9 +65,9 @@ Prompt 不含「畫」「draw」「generate」等關鍵字時，會自動加上 
 
 ```bash
 # 啟動服務
-gemini-image serve
+gemini-web serve
 # 或
-gemini-image serve --host 0.0.0.0 --port 8070
+gemini-web serve --host 0.0.0.0 --port 8070
 ```
 
 API 模式自動去水印、自動下載原尺寸圖片。
@@ -193,44 +193,44 @@ original = (watermarked - alpha × logo) / (1 - alpha)
 
 ## AI Agent 整合
 
-讓你的 AI Agent 能用 `/gemini-image` 指令生圖。
+讓你的 AI Agent 能用 `/gemini-web` 指令生圖。
 
 ### 安裝（一行搞定）
 
 > ⚠️ **不要用 `pip install`**，必須用 uv 或 pipx。
 
 ```bash
-uv tool install gemini-image && gemini-image install
+uv tool install gemini-web && gemini-web install
 ```
 
-`gemini-image install` 會自動：
+`gemini-web install` 會自動：
 1. 安裝 Chromium 瀏覽器（Playwright）
 2. 偵測 Claude Code（`~/.claude/`）→ 安裝 slash commands
 3. 偵測 Gemini CLI（`~/.gemini/`）→ 安裝 slash commands
 
-安裝後可用：`/gemini-image <自然語言描述>`、`/generate <英文 prompt>`、`/chat <提問>`
+安裝後可用：`/gemini-web <自然語言描述>`、`/generate <英文 prompt>`、`/chat <提問>`
 
 ### 登入（需人工操作）
 
 ```bash
-gemini-image login
+gemini-web login
 ```
 
-會彈出瀏覽器，手動登入 Google 帳號後按 Enter 關閉。登入狀態存在 `~/.gemini-image/profiles/`。
+會彈出瀏覽器，手動登入 Google 帳號後按 Enter 關閉。登入狀態存在 `~/.gemini-web/profiles/`。
 
 ### 支援的 AI Agent
 
 | Agent | 自動支援 | 說明 |
 |-------|:--------:|------|
-| **Claude Code** | ✓ | install 自動安裝 commands 到 `~/.claude/commands/gemini-image/` |
-| **Gemini CLI** | ✓ | install 自動安裝 commands 到 `~/.gemini/commands/gemini-image/` |
+| **Claude Code** | ✓ | install 自動安裝 commands 到 `~/.claude/commands/gemini-web/` |
+| **Gemini CLI** | ✓ | install 自動安裝 commands 到 `~/.gemini/commands/gemini-web/` |
 | **Cursor / Windsurf** | — | 把 `AGENTS.md` 內容加入 rules 設定 |
 | **其他 Agent** | — | 讓 Agent 讀取 `AGENTS.md` 作為系統指引 |
 
 ### CLI 呼叫
 
 ```bash
-gemini-image generate "detailed english prompt" -o /path/to/output.png --no-watermark
+gemini-web generate "detailed english prompt" -o /path/to/output.png --no-watermark
 ```
 
 ### HTTP API
@@ -248,7 +248,7 @@ if data["success"]:
 | 變數 | 說明 | 預設 |
 |------|------|------|
 | `HEADLESS` | 無頭模式 | `false`（CLI generate 強制 `true`） |
-| `PROFILE_DIR` | 瀏覽器 session 目錄 | `~/.gemini-image/profiles` |
+| `PROFILE_DIR` | 瀏覽器 session 目錄 | `~/.gemini-web/profiles` |
 | `GEMINI_URL` | Gemini 網址 | `https://gemini.google.com/app` |
 | `PORT` | API 服務埠 | `8070` |
 | `DEFAULT_TIMEOUT` | 生圖超時秒數 | `180` |
@@ -258,8 +258,8 @@ if data["success"]:
 ## 從原始碼安裝
 
 ```bash
-git clone https://github.com/yazelin/gemini-image.git
-cd gemini-image
+git clone https://github.com/yazelin/gemini-web.git
+cd gemini-web
 bash scripts/setup.sh
 ```
 
@@ -273,7 +273,7 @@ uv run pytest -v
 ## 已知限制
 
 - 一次只能處理一個請求（生圖或對話，其他排隊等待）
-- Google 登入過期需手動重新登入（`gemini-image login`）
+- Google 登入過期需手動重新登入（`gemini-web login`）
 - Gemini 改版可能導致 DOM selector 失效，需更新 `src/selectors.py`
 - 違反 Google 服務條款，帳號有被封風險
 - 生圖耗時約 30-120 秒，視 Gemini 伺服器負載而定

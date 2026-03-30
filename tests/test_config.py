@@ -20,7 +20,7 @@ def test_default_settings(monkeypatch):
     assert s.gemini_url == "https://gemini.google.com/app"
     assert s.stealth_language == "zh-TW,zh,en-US,en"
     assert s.stealth_timezone == "Asia/Taipei"
-    # profile_dir 應為絕對路徑（~/.gemini-image/profiles）
+    # profile_dir 應為絕對路徑（~/.gemini-web/profiles）
     assert Path(s.profile_dir).is_absolute()
 
 

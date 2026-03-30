@@ -1,14 +1,14 @@
 ---
-description: Chat with Gemini via gemini-image (text input, text output)
+description: Chat with Gemini via gemini-web (text input, text output)
 argument-hint: <prompt>
 ---
 
-You are a command handler for gemini-image chat. Send the user's prompt to Gemini and return the text response.
+You are a command handler for gemini-web chat. Send the user's prompt to Gemini and return the text response.
 
 ## Usage
 
 ```bash
-gemini-image chat "<prompt>"
+gemini-web chat "<prompt>"
 ```
 
 Or via HTTP API:
@@ -29,10 +29,10 @@ curl -X POST http://localhost:8070/api/chat \
 
 ```
 /chat What is quantum computing?
-→ gemini-image chat "What is quantum computing?"
+→ gemini-web chat "What is quantum computing?"
 
 /chat 解釋量子力學
-→ gemini-image chat "解釋量子力學"
+→ gemini-web chat "解釋量子力學"
 ```
 
 User input: $ARGUMENTS

@@ -6,8 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 預設資料目錄：~/.gemini-image/
-_DEFAULT_DATA_DIR = str(Path.home() / ".gemini-image")
+# 預設資料目錄：~/.gemini-web/（fallback 舊版 ~/.gemini-image/）
+_new_dir = Path.home() / ".gemini-web"
+_old_dir = Path.home() / ".gemini-image"
+_DEFAULT_DATA_DIR = str(_new_dir if _new_dir.exists() else (_old_dir if _old_dir.exists() else _new_dir))
 
 
 def _bool(val: str | None, default: bool = False) -> bool:

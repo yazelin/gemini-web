@@ -10,7 +10,7 @@
 
 **Spec:** `docs/design.md`
 
-**工作目錄：** `~/SDD/gemini-image-api/`
+**工作目錄：** `~/SDD/gemini-web-api/`
 
 **測試策略：** 瀏覽器互動層無法 mock，採用可測試層（config、queue、API routing）TDD + 瀏覽器層手動整合測試。
 
@@ -35,7 +35,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "gemini-image-api"
+name = "gemini-web-api"
 version = "0.1.0"
 description = "Gemini 圖片生成 API 服務"
 requires-python = ">=3.11"
@@ -132,7 +132,7 @@ def test_settings_from_env(monkeypatch):
 
 - [ ] **Step 6: 執行測試，確認失敗**
 
-Run: `cd ~/SDD/gemini-image-api && uv sync --extra dev && uv run pytest tests/test_config.py -v`
+Run: `cd ~/SDD/gemini-web-api && uv sync --extra dev && uv run pytest tests/test_config.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.config'`
 
 - [ ] **Step 7: 實作 config.py**
@@ -192,13 +192,13 @@ settings = Settings()
 
 - [ ] **Step 8: 執行測試，確認通過**
 
-Run: `cd ~/SDD/gemini-image-api && uv run pytest tests/test_config.py -v`
+Run: `cd ~/SDD/gemini-web-api && uv run pytest tests/test_config.py -v`
 Expected: 2 passed
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add -A
 git commit -m "feat: 專案骨架 — pyproject.toml、config、測試"
 ```
@@ -247,7 +247,7 @@ SELECTORS = {
 - [ ] **Step 2: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add src/selectors.py
 git commit -m "feat: DOM selector 集中管理"
 ```
@@ -428,7 +428,7 @@ browser_manager = BrowserManager()
 - [ ] **Step 2: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add src/browser.py
 git commit -m "feat: 瀏覽器管理 — stealth、session 持久化、心跳"
 ```
@@ -497,7 +497,7 @@ def test_queue_size(queue):
 
 - [ ] **Step 2: 執行測試，確認失敗**
 
-Run: `cd ~/SDD/gemini-image-api && uv run pytest tests/test_queue.py -v`
+Run: `cd ~/SDD/gemini-web-api && uv run pytest tests/test_queue.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.queue'`
 
 - [ ] **Step 3: 實作 queue.py**
@@ -573,13 +573,13 @@ class RequestQueue:
 
 - [ ] **Step 4: 執行測試，確認通過**
 
-Run: `cd ~/SDD/gemini-image-api && uv run pytest tests/test_queue.py -v`
+Run: `cd ~/SDD/gemini-web-api && uv run pytest tests/test_queue.py -v`
 Expected: 3 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add src/queue.py tests/test_queue.py
 git commit -m "feat: asyncio 請求佇列 + 測試"
 ```
@@ -773,7 +773,7 @@ def _error(error: str, message: str, elapsed: float = 0) -> dict:
 - [ ] **Step 2: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add src/gemini.py
 git commit -m "feat: Gemini 頁面互動 — 輸入、等待、擷取圖片"
 ```
@@ -860,7 +860,7 @@ async def test_generate_success(mock_browser, mock_queue):
 
 - [ ] **Step 2: 執行測試，確認失敗**
 
-Run: `cd ~/SDD/gemini-image-api && uv run pytest tests/test_api.py -v`
+Run: `cd ~/SDD/gemini-web-api && uv run pytest tests/test_api.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.main'`
 
 - [ ] **Step 3: 實作 main.py**
@@ -990,13 +990,13 @@ async def api_new_chat():
 
 - [ ] **Step 4: 執行測試，確認通過**
 
-Run: `cd ~/SDD/gemini-image-api && uv run pytest tests/test_api.py -v`
+Run: `cd ~/SDD/gemini-web-api && uv run pytest tests/test_api.py -v`
 Expected: 3 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add src/main.py tests/test_api.py
 git commit -m "feat: FastAPI 端點 — generate、health、new-chat + 測試"
 ```
@@ -1013,7 +1013,7 @@ git commit -m "feat: FastAPI 端點 — generate、health、new-chat + 測試"
 - [ ] **Step 1: 以 headed 模式啟動服務**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 cp .env.example .env
 # 確認 .env 中 HEADLESS=false
 uv run playwright install chromium
@@ -1072,7 +1072,7 @@ else:
 - [ ] **Step 6: Commit 校準後的 selector**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git add src/selectors.py
 git commit -m "fix: 校準 Gemini DOM selector"
 ```
@@ -1093,7 +1093,7 @@ git commit -m "fix: 校準 Gemini DOM selector"
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="gemini-image-api"
+SERVICE_NAME="gemini-web-api"
 WORK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 USER="$(whoami)"
 
@@ -1209,7 +1209,7 @@ curl -X POST http://localhost:8070/api/generate \
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 chmod +x scripts/install-service.sh
 git add scripts/install-service.sh README.md
 git commit -m "docs: README + systemd 部署腳本"
@@ -1222,7 +1222,7 @@ git commit -m "docs: README + systemd 部署腳本"
 - [ ] **Step 1: 執行全部測試**
 
 ```bash
-cd ~/SDD/gemini-image-api && uv run pytest -v
+cd ~/SDD/gemini-web-api && uv run pytest -v
 ```
 
 Expected: 5 passed（test_config x2, test_queue x3, test_api x3 = 8 tests）
@@ -1230,7 +1230,7 @@ Expected: 5 passed（test_config x2, test_queue x3, test_api x3 = 8 tests）
 - [ ] **Step 2: 最終 commit**
 
 ```bash
-cd ~/SDD/gemini-image-api
+cd ~/SDD/gemini-web-api
 git log --oneline
 ```
 

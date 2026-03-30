@@ -1,5 +1,7 @@
 # Gemini Image
 
+> **快速安裝：** `uv tool install gemini-image && gemini-image install`
+
 使用 Playwright 自動化 Gemini 網頁版生成含繁體中文文字的圖片。提供 **CLI 工具**和 **HTTP API** 兩種使用方式。
 
 自動移除 Gemini 可見水印（Reverse Alpha Blending，基於 [gemini-watermark-remover](https://github.com/journey-ad/gemini-watermark-remover)）。

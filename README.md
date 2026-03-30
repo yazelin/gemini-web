@@ -2,7 +2,7 @@
 
 > **快速安裝：** `uv tool install gemini-image && gemini-image install`
 
-使用 Playwright 自動化 Gemini 網頁版生成含繁體中文文字的圖片。提供 **CLI 工具**和 **HTTP API** 兩種使用方式。
+使用 Playwright 自動化 Gemini 網頁版，提供**圖片生成**和**文字對話**功能。支援 **CLI 工具**和 **HTTP API** 兩種使用方式。
 
 自動移除 Gemini 可見水印（Reverse Alpha Blending，基於 [gemini-watermark-remover](https://github.com/journey-ad/gemini-watermark-remover)）。
 
@@ -46,6 +46,9 @@ gemini-image login
 ### CLI 工具
 
 ```bash
+# 文字對話
+gemini-image chat "解釋量子力學"
+
 # 生成圖片（自動 headless）
 gemini-image generate "A cute cat sitting on a windowsill" -o cat.png
 
@@ -68,6 +71,25 @@ gemini-image serve --host 0.0.0.0 --port 8070
 ```
 
 API 模式自動去水印、自動下載原尺寸圖片。
+
+#### POST /api/chat
+
+```bash
+curl -X POST http://localhost:8070/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "解釋量子力學"}'
+```
+
+回傳：
+
+```json
+{
+  "success": true,
+  "text": "量子力學是...",
+  "prompt": "...",
+  "elapsed_seconds": 8.3
+}
+```
 
 #### POST /api/generate
 
@@ -144,7 +166,7 @@ uv tool install gemini-image && gemini-image install
 2. 偵測 Claude Code（`~/.claude/`）→ 安裝 slash commands
 3. 偵測 Gemini CLI（`~/.gemini/`）→ 安裝 slash commands
 
-安裝後可用：`/gemini-image <自然語言描述>` 和 `/generate <英文 prompt>`
+安裝後可用：`/gemini-image <自然語言描述>`、`/generate <英文 prompt>`、`/chat <提問>`
 
 ### 登入（需人工操作）
 
@@ -207,7 +229,7 @@ uv run pytest -v
 
 ## 已知限制
 
-- 一次只能處理一個生圖請求（其他排隊等待）
+- 一次只能處理一個請求（生圖或對話，其他排隊等待）
 - Google 登入過期需手動重新登入（`gemini-image login`）
 - Gemini 改版可能導致 DOM selector 失效，需更新 `src/selectors.py`
 - 違反 Google 服務條款，帳號有被封風險

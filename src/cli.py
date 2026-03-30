@@ -73,6 +73,44 @@ async def _do_login():
     print("登入狀態已儲存。之後可以用 headless 模式生圖。")
 
 
+async def _do_chat(prompt: str, verbose: bool):
+    """文字對話"""
+    from .browser import BrowserManager
+    from .gemini import chat, new_chat
+    from .config import settings
+
+    bm = BrowserManager(headless=True)
+    await bm.start()
+
+    try:
+        page = bm.page
+        if not page:
+            print("錯誤：瀏覽器未啟動", file=sys.stderr)
+            sys.exit(1)
+
+        logged_in = await bm.is_logged_in(wait=True)
+        if not logged_in:
+            print("錯誤：尚未登入 Google，請先執行 `gemini-image login`", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"提問中... prompt: {prompt[:60]}{'...' if len(prompt) > 60 else ''}")
+
+        result = await chat(page, prompt, timeout=settings.default_timeout)
+        await new_chat(page)
+
+        if not result.get("success"):
+            error = result.get("error", "unknown")
+            message = result.get("message", "")
+            print(f"失敗 [{error}]：{message}", file=sys.stderr)
+            sys.exit(1)
+
+        print(result.get("text", ""))
+        print(f"\n（{result.get('elapsed_seconds', 0)}秒）", file=sys.stderr)
+
+    finally:
+        await bm.stop()
+
+
 async def _do_generate(prompt: str, output: str, no_watermark: bool, verbose: bool):
     """生成圖片"""
     from .browser import BrowserManager
@@ -157,6 +195,11 @@ def main():
     # login
     login_parser = sub.add_parser("login", help="開啟瀏覽器登入 Google")
 
+    # chat
+    chat_parser = sub.add_parser("chat", help="文字對話")
+    chat_parser.add_argument("prompt", help="提問內容")
+    chat_parser.add_argument("-v", "--verbose", action="store_true", help="顯示詳細 log")
+
     # generate
     gen_parser = sub.add_parser("generate", help="生成圖片")
     gen_parser.add_argument("prompt", help="圖片描述（建議英文）")
@@ -185,6 +228,10 @@ def main():
 
     elif args.command == "login":
         asyncio.run(_do_login())
+
+    elif args.command == "chat":
+        _setup_logging(getattr(args, "verbose", False))
+        asyncio.run(_do_chat(args.prompt, getattr(args, "verbose", False)))
 
     elif args.command == "generate":
         _setup_logging(getattr(args, "verbose", False))

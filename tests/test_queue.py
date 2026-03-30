@@ -12,13 +12,13 @@ def queue():
 @pytest.mark.asyncio
 async def test_submit_and_process(queue):
     """提交任務後 worker 應處理並回傳結果"""
-    async def fake_handler(prompt: str, timeout: int) -> dict:
+    async def fake_handler(kind: str, prompt: str, timeout: int) -> dict:
         return {"success": True, "images": ["base64data"], "prompt": prompt}
 
     worker_task = asyncio.create_task(queue.run_worker(fake_handler))
     try:
         result = await asyncio.wait_for(
-            queue.submit("test prompt", timeout=5),
+            queue.submit("generate", "test prompt", timeout=5),
             timeout=3,
         )
         assert result["success"] is True
@@ -35,10 +35,10 @@ async def test_submit_and_process(queue):
 async def test_queue_full(queue):
     """佇列滿時應拋出 QueueFullError"""
     for _ in range(2):
-        queue._queue.put_nowait(("p", 60, asyncio.get_event_loop().create_future()))
+        queue._queue.put_nowait(("generate", "p", 60, asyncio.get_event_loop().create_future()))
 
     with pytest.raises(QueueFullError):
-        await queue.submit("overflow", timeout=5)
+        await queue.submit("generate", "overflow", timeout=5)
 
 
 def test_queue_size(queue):

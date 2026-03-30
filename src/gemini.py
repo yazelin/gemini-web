@@ -1,4 +1,4 @@
-"""Gemini 頁面互動 — 輸入 prompt、等待生成、擷取圖片"""
+"""Gemini 頁面互動 — 輸入 prompt、等待生成、擷取圖片或文字回應"""
 import asyncio
 import logging
 import time
@@ -267,6 +267,130 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
     except Exception as e:
         elapsed = round(time.time() - start, 1)
         logger.exception("Gemini 互動發生錯誤")
+        return _error("browser_error", str(e), elapsed)
+
+
+async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
+    """在 Gemini 頁面輸入 prompt 並擷取文字回應
+
+    Returns:
+        {"success": True, "text": "...", "prompt": ..., "elapsed_seconds": ...}
+        或 {"success": False, "error": ..., "message": ...}
+    """
+    start = time.time()
+
+    try:
+        # 1. 確認輸入框就緒
+        input_el = await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=15_000
+        )
+        if not input_el:
+            return _error("browser_error", "找不到輸入框")
+        await asyncio.sleep(1)
+
+        # 1.5 關閉可能的 overlay 彈窗
+        try:
+            await page.evaluate("""() => {
+                document.querySelectorAll('.cdk-overlay-container').forEach(el => {
+                    el.innerHTML = '';
+                });
+            }""")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+        # 2. 輸入 prompt（用 JS 模擬 clipboard paste）
+        await input_el.click()
+        await asyncio.sleep(0.3)
+        await input_el.evaluate("""(el, text) => {
+            el.focus();
+            const dt = new DataTransfer();
+            dt.setData('text/plain', text);
+            const pasteEvent = new ClipboardEvent('paste', {
+                clipboardData: dt,
+                bubbles: true,
+                cancelable: true,
+            });
+            el.dispatchEvent(pasteEvent);
+            if (!el.textContent || el.textContent.trim().length === 0) {
+                el.innerText = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }""", prompt)
+        await asyncio.sleep(1)
+
+        # 3. 送出
+        await page.keyboard.press("Enter")
+        logger.info("已送出 chat prompt：%s", prompt[:50])
+
+        # 4. 等待回應完成：等 model-response 出現，再等文字穩定
+        logger.info("等待 Gemini 回應...")
+        wait_ms = max((timeout - 10), 30) * 1000
+        try:
+            await page.wait_for_selector(
+                SELECTORS["model_response"], state="visible", timeout=wait_ms
+            )
+            logger.info("偵測到 model-response")
+        except Exception:
+            elapsed = round(time.time() - start, 1)
+            return _error("no_response", "Gemini 未回應", elapsed)
+
+        # 等文字穩定（連續 2 次內容不變 = 完成）
+        prev_text = ""
+        stable_count = 0
+        for _ in range(60):  # 最多等 60 * 1 秒
+            await asyncio.sleep(1)
+            response_els = await page.query_selector_all(SELECTORS["response"])
+            if not response_els:
+                continue
+            text = (await response_els[-1].inner_text()).strip()
+            if text and text == prev_text:
+                stable_count += 1
+                if stable_count >= 2:
+                    break
+            else:
+                stable_count = 0
+                prev_text = text
+
+        # 5. 提取文字回應
+        response_els = await page.query_selector_all(SELECTORS["response"])
+        if not response_els:
+            elapsed = round(time.time() - start, 1)
+            return _error("no_response", "Gemini 未回應", elapsed)
+
+        last_response = response_els[-1]
+        text = (await last_response.inner_text()).strip()
+
+        if not text:
+            elapsed = round(time.time() - start, 1)
+            return _error("no_response", "Gemini 回應為空", elapsed)
+
+        # 6. 檢查是否被拒絕
+        for phrase in _BLOCK_PHRASES:
+            if phrase.lower() in text.lower():
+                elapsed = round(time.time() - start, 1)
+                return {
+                    "success": False,
+                    "error": "content_blocked",
+                    "message": text[:200],
+                    "elapsed_seconds": elapsed,
+                }
+
+        elapsed = round(time.time() - start, 1)
+        return {
+            "success": True,
+            "text": text,
+            "prompt": prompt,
+            "elapsed_seconds": elapsed,
+        }
+
+    except asyncio.TimeoutError:
+        elapsed = round(time.time() - start, 1)
+        return _error("timeout", f"回應超時（{timeout}秒）", elapsed)
+    except Exception as e:
+        elapsed = round(time.time() - start, 1)
+        logger.exception("Gemini chat 發生錯誤")
         return _error("browser_error", str(e), elapsed)
 
 

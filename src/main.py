@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from .browser import browser_manager
 from .config import settings
-from .gemini import generate_image, new_chat
+from .gemini import chat, generate_image, new_chat
 from .queue import RequestQueue, QueueFullError
 
 logging.basicConfig(
@@ -22,7 +22,7 @@ request_queue = RequestQueue(max_size=settings.queue_max_size)
 _start_time = time.time()
 
 
-async def _handle_request(prompt: str, timeout: int) -> dict:
+async def _handle_generate(prompt: str, timeout: int) -> dict:
     """Worker handler：操作瀏覽器生圖 → 去水印 → 重置對話"""
     page = browser_manager.page
     if not page:
@@ -39,6 +39,24 @@ async def _handle_request(prompt: str, timeout: int) -> dict:
         )
 
     return result
+
+
+async def _handle_chat(prompt: str, timeout: int) -> dict:
+    """Worker handler：操作瀏覽器文字對話 → 重置對話"""
+    page = browser_manager.page
+    if not page:
+        return {"success": False, "error": "browser_error", "message": "瀏覽器未啟動"}
+
+    result = await chat(page, prompt, timeout)
+    await new_chat(page)
+    return result
+
+
+async def _dispatch(kind: str, prompt: str, timeout: int) -> dict:
+    """根據請求類型分派到對應 handler"""
+    if kind == "chat":
+        return await _handle_chat(prompt, timeout)
+    return await _handle_generate(prompt, timeout)
 
 
 def _remove_watermarks(images: list[str]) -> list[str]:
@@ -98,7 +116,7 @@ def _remove_watermarks(images: list[str]) -> list[str]:
 async def lifespan(app: FastAPI):
     """服務生命週期：啟動瀏覽器 + worker，結束時清理"""
     await browser_manager.start()
-    worker_task = asyncio.create_task(request_queue.run_worker(_handle_request))
+    worker_task = asyncio.create_task(request_queue.run_worker(_dispatch))
     logger.info("服務已啟動，port %d", settings.port)
     yield
     worker_task.cancel()
@@ -120,6 +138,11 @@ class GenerateRequest(BaseModel):
     timeout: int = settings.default_timeout
 
 
+class ChatRequest(BaseModel):
+    prompt: str
+    timeout: int = 120
+
+
 # ── 端點 ──
 
 
@@ -127,13 +150,25 @@ class GenerateRequest(BaseModel):
 async def api_generate(req: GenerateRequest):
     """生成圖片"""
     try:
-        result = await request_queue.submit(req.prompt, timeout=req.timeout)
+        result = await request_queue.submit("generate", req.prompt, timeout=req.timeout)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:
         raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
 
-    # 統一回傳 JSON 格式（不丟 HTTPException），方便呼叫端統一處理
+    return result
+
+
+@app.post("/api/chat")
+async def api_chat(req: ChatRequest):
+    """文字對話"""
+    try:
+        result = await request_queue.submit("chat", req.prompt, timeout=req.timeout)
+    except QueueFullError:
+        raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+
     return result
 
 

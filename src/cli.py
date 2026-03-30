@@ -194,6 +194,10 @@ def main():
 
     # login
     login_parser = sub.add_parser("login", help="開啟瀏覽器登入 Google")
+    login_parser.add_argument(
+        "-w", "--worker", type=int, default=0,
+        help="Worker 編號（預設 0）",
+    )
 
     # chat
     chat_parser = sub.add_parser("chat", help="文字對話")

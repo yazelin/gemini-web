@@ -25,7 +25,7 @@ gemini-image = "src.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
-artifacts = ["src/assets/*.png"]
+artifacts = ["src/assets/*.png", "src/commands/*.md", "src/commands/*.toml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

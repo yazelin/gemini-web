@@ -1,0 +1,25 @@
+description = "使用 Gemini 生成圖片（自然語言輸入，自動擴寫 prompt）"
+
+prompt = """
+Analyze the user's natural language request and generate an image using gemini-image CLI.
+
+Steps:
+1. Understand the user's intent from their input
+2. Expand into a detailed English prompt describing: subject, style, composition, colors, mood
+3. If Chinese text is needed in the image, use quotes: with text "歡迎光臨"
+4. Run the shell command:
+   gemini-image generate "<detailed_english_prompt>" -o <output_path> --no-watermark
+5. Inform the user the image has been generated (takes 30-120 seconds)
+
+Examples:
+- User says "畫一隻貓" → run: gemini-image generate "A cute fluffy orange tabby cat sitting on a windowsill, warm afternoon sunlight, soft watercolor style" -o cat.png --no-watermark
+- User says "做開幕海報" → run: gemini-image generate "A modern grand opening poster with text '盛大開幕', red and gold, confetti, professional design" -o poster.png --no-watermark
+
+Important:
+- Always use --no-watermark
+- Always expand the prompt, never forward user's raw text directly
+- Use English prompts for best results
+- If command not found, tell user to run: uv tool install gemini-image && gemini-image install
+
+User request: {{args}}
+"""

@@ -3,10 +3,53 @@ import argparse
 import asyncio
 import base64
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+
+
+def _get_commands_dir() -> Path:
+    """取得 package 內建 commands 目錄路徑"""
+    return Path(__file__).parent / "commands"
+
+
+def _install_commands():
+    """偵測 Claude Code / Gemini CLI 並安裝對應 commands"""
+    commands_src = _get_commands_dir()
+    if not commands_src.exists():
+        print("警告：找不到內建 commands 目錄，跳過 AI Agent 整合")
+        return
+
+    installed = []
+
+    # Claude Code: 複製 .md 到 ~/.claude/commands/gemini-image/
+    claude_dir = Path.home() / ".claude"
+    if claude_dir.exists():
+        dest = claude_dir / "commands" / "gemini-image"
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in commands_src.glob("*.md"):
+            shutil.copy2(f, dest / f.name)
+        installed.append(f"Claude Code → {dest}")
+
+    # Gemini CLI: 複製 .toml 到 ~/.gemini/commands/gemini-image/
+    gemini_dir = Path.home() / ".gemini"
+    if gemini_dir.exists():
+        dest = gemini_dir / "commands" / "gemini-image"
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in commands_src.glob("*.toml"):
+            shutil.copy2(f, dest / f.name)
+        installed.append(f"Gemini CLI  → {dest}")
+
+    if installed:
+        print("\nAI Agent commands 已安裝：")
+        for line in installed:
+            print(f"  {line}")
+        print("可用指令：/gemini-image, /generate")
+    else:
+        print("\n未偵測到 Claude Code 或 Gemini CLI，跳過 commands 安裝")
+        print("如需手動安裝，請參考：https://github.com/yazelin/gemini-image#ai-agent-整合")
 
 
 def _setup_logging(verbose: bool = False):
@@ -132,10 +175,13 @@ def main():
     args = parser.parse_args()
 
     if args.command == "install":
-        # 安裝 Chromium
+        # 1. 安裝 Chromium
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
-        print("\n如需 AI Agent 整合，請參考：")
-        print("  https://github.com/yazelin/gemini-image#ai-agent-整合")
+
+        # 2. 安裝 AI Agent commands
+        _install_commands()
+
+        print("\n下一步：執行 `gemini-image login` 登入 Google")
 
     elif args.command == "login":
         asyncio.run(_do_login())

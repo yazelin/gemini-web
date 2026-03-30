@@ -1,0 +1,22 @@
+description = "使用 gemini-image 生成圖片（直接指定 prompt）"
+
+prompt = """
+Run the gemini-image generate command with the user's prompt.
+
+Parse the input and execute:
+  gemini-image generate "<prompt>" -o <output_path> --no-watermark
+
+Rules:
+- Extract the prompt text (everything before options like -o)
+- If no -o is specified, use output.png
+- Always add --no-watermark unless user explicitly says not to
+
+Examples:
+- Input: A cute cat, watercolor style
+  Run: gemini-image generate "A cute cat, watercolor style" -o output.png --no-watermark
+
+- Input: A poster with text "歡迎光臨" -o poster.png
+  Run: gemini-image generate "A poster with text '歡迎光臨'" -o poster.png --no-watermark
+
+User input: {{args}}
+"""

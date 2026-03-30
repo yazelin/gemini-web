@@ -129,16 +129,39 @@ original = (watermarked - alpha × logo) / (1 - alpha)
 
 ## AI Agent 整合
 
-讓你的 AI Agent 能呼叫 `gemini-image` 生圖。
+讓你的 AI Agent 能用 `/gemini-image` 指令生圖。
 
-### 步驟
+### 安裝（一行搞定）
 
-1. 安裝 `gemini-image`（見上方安裝說明，**必須用 uv 或 pipx，不要用 pip**）
-2. 把 `AGENTS.md` 加入你的 AI Agent 的上下文：
-   - **Gemini CLI**：本倉庫已包含 `GEMINI.md`，Gemini CLI 會自動讀取
-   - **Claude Code**：複製 `.claude/skills/generate-image.md` 到你的專案 `.claude/skills/` 或全域 `~/.claude/skills/`
-   - **Cursor / Windsurf**：把 `AGENTS.md` 內容加入你的 rules 設定
-   - **其他 Agent**：讓 Agent 讀取 `AGENTS.md` 作為系統指引
+> ⚠️ **不要用 `pip install`**，必須用 uv 或 pipx。
+
+```bash
+uv tool install gemini-image && gemini-image install
+```
+
+`gemini-image install` 會自動：
+1. 安裝 Chromium 瀏覽器（Playwright）
+2. 偵測 Claude Code（`~/.claude/`）→ 安裝 slash commands
+3. 偵測 Gemini CLI（`~/.gemini/`）→ 安裝 slash commands
+
+安裝後可用：`/gemini-image <自然語言描述>` 和 `/generate <英文 prompt>`
+
+### 登入（需人工操作）
+
+```bash
+gemini-image login
+```
+
+會彈出瀏覽器，手動登入 Google 帳號後按 Enter 關閉。登入狀態存在 `~/.gemini-image/profiles/`。
+
+### 支援的 AI Agent
+
+| Agent | 自動支援 | 說明 |
+|-------|:--------:|------|
+| **Claude Code** | ✓ | install 自動安裝 commands 到 `~/.claude/commands/gemini-image/` |
+| **Gemini CLI** | ✓ | install 自動安裝 commands 到 `~/.gemini/commands/gemini-image/` |
+| **Cursor / Windsurf** | — | 把 `AGENTS.md` 內容加入 rules 設定 |
+| **其他 Agent** | — | 讓 Agent 讀取 `AGENTS.md` 作為系統指引 |
 
 ### CLI 呼叫
 

@@ -1,7 +1,7 @@
 """config 模組測試"""
 import os
 import pytest
-from src.config import Settings
+from src.config import Settings, get_worker_profile_dir
 
 
 def test_default_settings(monkeypatch):
@@ -33,3 +33,34 @@ def test_settings_from_env(monkeypatch):
     assert s.headless is True
     assert s.port == 9090
     assert s.queue_max_size == 5
+
+
+def test_default_worker_count(monkeypatch):
+    """worker_count 預設為 1"""
+    monkeypatch.delenv("WORKER_COUNT", raising=False)
+    s = Settings()
+    assert s.worker_count == 1
+
+
+def test_worker_count_from_env(monkeypatch):
+    """應從 WORKER_COUNT 環境變數讀取"""
+    monkeypatch.setenv("WORKER_COUNT", "3")
+    s = Settings()
+    assert s.worker_count == 3
+
+
+def test_worker_profile_dir_zero(monkeypatch):
+    """worker 0 should use base profiles/ dir"""
+    monkeypatch.delenv("PROFILE_DIR", raising=False)
+    path = get_worker_profile_dir(0)
+    assert path.endswith("profiles")
+    assert "-" not in path.split("/")[-1]
+
+
+def test_worker_profile_dir_nonzero(monkeypatch):
+    """worker N should use profiles-N/ dir"""
+    monkeypatch.delenv("PROFILE_DIR", raising=False)
+    path = get_worker_profile_dir(1)
+    assert path.endswith("profiles-1")
+    path2 = get_worker_profile_dir(2)
+    assert path2.endswith("profiles-2")

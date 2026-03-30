@@ -51,9 +51,24 @@ class Settings:
         # 心跳
         self.heartbeat_interval: int = _int(os.getenv("HEARTBEAT_INTERVAL"), 300)
 
+        # Worker pool
+        self.worker_count: int = _int(os.getenv("WORKER_COUNT"), 1)
+
         # API 金鑰（逗號分隔多組，空字串 = 不驗證）
         _keys = os.getenv("API_KEYS", "")
         self.api_keys: set[str] = {k.strip() for k in _keys.split(",") if k.strip()}
 
 
 settings = Settings()
+
+
+def get_worker_profile_dir(worker_id: int) -> str:
+    """Return the profile directory path for a given worker ID.
+
+    worker 0 uses the base 'profiles/' dir (backward compatible).
+    worker N (N>=1) uses 'profiles-N/'.
+    """
+    base = Path(settings.profile_dir)
+    if worker_id == 0:
+        return str(base)
+    return str(base.parent / f"profiles-{worker_id}")

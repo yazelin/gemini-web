@@ -110,6 +110,48 @@ curl -X POST http://localhost:8070/api/generate \
 }
 ```
 
+#### POST /v1beta/models/{model}:generateContent（Google GenAI API 相容）
+
+完全相容 `google-genai` SDK 格式，可做為 Google Gemini API 的 drop-in replacement。
+
+```bash
+# 文字對話
+curl -X POST "http://localhost:8070/v1beta/models/gemini-2.5-flash:generateContent?key=YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents": [{"parts": [{"text": "什麼是量子力學"}]}]}'
+
+# 圖片生成
+curl -X POST "http://localhost:8070/v1beta/models/gemini-2.5-flash:generateContent?key=YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents": [{"parts": [{"text": "a cute cat"}]}], "generationConfig": {"responseMimeType": "image/png"}}'
+```
+
+回傳格式與 Google API 完全一致：
+
+```json
+{
+  "candidates": [{
+    "content": {
+      "parts": [{"text": "量子力學是..."}],
+      "role": "model"
+    },
+    "finishReason": "STOP"
+  }]
+}
+```
+
+搭配 `google-genai` SDK 使用：
+
+```python
+from google import genai
+client = genai.Client(
+    api_key="YOUR_KEY",
+    http_options={"api_version": "v1beta", "base_url": "http://localhost:8070"}
+)
+response = client.models.generate_content(model="gemini-2.5-flash", contents="Hello")
+print(response.text)
+```
+
 #### GET /api/health
 
 ```json
@@ -211,6 +253,7 @@ if data["success"]:
 | `PORT` | API 服務埠 | `8070` |
 | `DEFAULT_TIMEOUT` | 生圖超時秒數 | `180` |
 | `QUEUE_MAX_SIZE` | 最大排隊數 | `10` |
+| `API_KEYS` | API 金鑰（逗號分隔多組，空 = 不驗證） | 無 |
 
 ## 從原始碼安裝
 

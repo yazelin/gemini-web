@@ -49,5 +49,9 @@ class Settings:
         # 心跳
         self.heartbeat_interval: int = _int(os.getenv("HEARTBEAT_INTERVAL"), 300)
 
+        # API 金鑰（逗號分隔多組，空字串 = 不驗證）
+        _keys = os.getenv("API_KEYS", "")
+        self.api_keys: set[str] = {k.strip() for k in _keys.split(",") if k.strip()}
+
 
 settings = Settings()

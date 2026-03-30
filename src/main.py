@@ -4,7 +4,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .browser import browser_manager
@@ -200,3 +200,91 @@ async def api_new_chat():
         raise HTTPException(status_code=503, detail="瀏覽器未啟動")
     ok = await new_chat(page)
     return {"success": ok}
+
+
+# ── Google GenAI API 相容端點 ──
+
+
+def _verify_api_key(key: str | None):
+    """驗證 API 金鑰（如果有設定 API_KEYS）"""
+    if not settings.api_keys:
+        return  # 沒設定 = 不驗證
+    if not key or key not in settings.api_keys:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+
+@app.post("/v1beta/models/{model}:generateContent")
+async def genai_generate_content(model: str, request: Request, key: str = Query(default=None)):
+    """Google GenAI API 相容端點
+
+    支援文字對話和圖片生成，格式完全相容 google-genai SDK。
+    """
+    _verify_api_key(key)
+
+    body = await request.json()
+
+    # 提取 prompt（從 contents[].parts[].text 中組合）
+    prompt_parts = []
+    contents = body.get("contents", [])
+    for content in contents:
+        for part in content.get("parts", []):
+            if "text" in part:
+                prompt_parts.append(part["text"])
+    prompt = "\n".join(prompt_parts)
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="No text content in request")
+
+    # 判斷是圖片生成還是文字對話
+    gen_config = body.get("generationConfig", {})
+    response_mime = gen_config.get("responseMimeType", "")
+    is_image = response_mime.startswith("image/")
+
+    kind = "generate" if is_image else "chat"
+    timeout = settings.default_timeout
+
+    try:
+        result = await request_queue.submit(kind, prompt, timeout=timeout)
+    except QueueFullError:
+        raise HTTPException(status_code=429, detail="Queue full")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail="Request timeout")
+
+    if not result.get("success"):
+        # 回傳 Google 格式的錯誤
+        return {
+            "error": {
+                "code": 400,
+                "message": result.get("message", result.get("error", "Unknown error")),
+                "status": "FAILED_PRECONDITION",
+            }
+        }
+
+    # 組裝 Google 相容 response
+    if is_image:
+        # 圖片回應
+        parts = []
+        for img_data in result.get("images", []):
+            if "," in img_data:
+                header, b64 = img_data.split(",", 1)
+                mime = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+            else:
+                b64 = img_data
+                mime = "image/png"
+            parts.append({"inlineData": {"mimeType": mime, "data": b64}})
+    else:
+        # 文字回應
+        parts = [{"text": result.get("text", "")}]
+
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": parts,
+                    "role": "model",
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "modelVersion": model,
+    }

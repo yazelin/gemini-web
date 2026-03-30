@@ -44,12 +44,13 @@ _STEALTH_SCRIPT = """
 class BrowserManager:
     """管理單一 Playwright 瀏覽器實例"""
 
-    def __init__(self, headless: bool | None = None) -> None:
+    def __init__(self, headless: bool | None = None, profile_dir: str | None = None) -> None:
         self._playwright = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._headless_override = headless  # None = 用 settings
+        self._profile_dir_override = profile_dir
 
     @property
     def page(self) -> Page | None:
@@ -57,7 +58,7 @@ class BrowserManager:
 
     async def start(self) -> None:
         """啟動瀏覽器，導航到 Gemini"""
-        profile_path = str(Path(settings.profile_dir).resolve())
+        profile_path = str(Path(self._profile_dir_override or settings.profile_dir).resolve())
         Path(profile_path).mkdir(parents=True, exist_ok=True)
 
         languages = settings.stealth_language.split(",")

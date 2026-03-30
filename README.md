@@ -6,18 +6,30 @@
 
 ## 安裝
 
+> ⚠️ **不要用 `pip install`** — pip 不會建立隔離環境，會導致 Playwright 安裝失敗。請用 uv 或 pipx。
+
 ```bash
-# uv（推薦）
+# 1. 安裝 uv（如果還沒有）
+curl -LsSf https://astral.sh/uv/install.sh | sh              # macOS / Linux
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
+
+# 2. 安裝 gemini-image
 uv tool install gemini-image && gemini-image install
+```
 
-# 或 pip
-pip install gemini-image && gemini-image install
-
-# 或 pipx
+備選方式（效果相同）：
+```bash
 pipx install gemini-image && gemini-image install
 ```
 
 `gemini-image install` 會安裝 Chromium 瀏覽器（Playwright）。
+
+### 已經用 pip 裝過？
+
+```bash
+pip uninstall gemini-image -y
+uv tool install gemini-image && gemini-image install
+```
 
 ## 首次登入 Google
 
@@ -119,8 +131,9 @@ original = (watermarked - alpha × logo) / (1 - alpha)
 
 ### 步驟
 
-1. 安裝 `gemini-image`（見上方安裝說明）
+1. 安裝 `gemini-image`（見上方安裝說明，**必須用 uv 或 pipx，不要用 pip**）
 2. 把 `AGENTS.md` 加入你的 AI Agent 的上下文：
+   - **Gemini CLI**：本倉庫已包含 `GEMINI.md`，Gemini CLI 會自動讀取
    - **Claude Code**：複製 `.claude/skills/generate-image.md` 到你的專案 `.claude/skills/` 或全域 `~/.claude/skills/`
    - **Cursor / Windsurf**：把 `AGENTS.md` 內容加入你的 rules 設定
    - **其他 Agent**：讓 Agent 讀取 `AGENTS.md` 作為系統指引

@@ -195,6 +195,19 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
             }
         }
 
+    # JSON 回應清理（Gemini 網頁版可能加 "JSON\n" 前綴或 code block）
+    if not is_image and result.get("text"):
+        import re
+        text = result["text"].strip()
+        # 去掉 ```json ... ``` code block
+        m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+        if m:
+            text = m.group(1).strip()
+        # 去掉 "JSON\n" 前綴
+        if text.upper().startswith("JSON"):
+            text = text[4:].lstrip()
+        result["text"] = text
+
     if is_image:
         parts = []
         for img_data in result.get("images", []):

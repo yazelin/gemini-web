@@ -394,9 +394,11 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
             return _error("no_response", "Gemini 未回應", elapsed)
 
         # 等文字穩定（連續 2 次內容不變 = 完成）
+        # 上限 30 秒。已經偵測到 model-response 之後,Gemini 串流文字通常 5-15 秒
+        # 內結束。若頁面有動態元素 (時間戳/廣告) 導致 text 一直變,30 秒後強制跳出。
         prev_text = ""
         stable_count = 0
-        for _ in range(60):  # 最多等 60 * 1 秒
+        for _ in range(30):
             await asyncio.sleep(1)
             response_els = await page.query_selector_all(SELECTORS["response"])
             if not response_els:

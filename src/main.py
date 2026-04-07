@@ -1,13 +1,16 @@
 """FastAPI 應用程式入口"""
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import settings
+from .openclaw_adapter import build_prompt, build_response_parts
 from .worker_pool import WorkerPool, QueueFullError
 
 logging.basicConfig(
@@ -132,25 +135,24 @@ def _verify_api_key(request: Request, key: str | None):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
-@app.post("/v1beta/models/{model}:generateContent")
-async def genai_generate_content(model: str, request: Request, key: str = Query(default=None)):
-    """Google GenAI API 相容端點"""
-    _verify_api_key(request, key)
+async def _generate_content_impl(model: str, body: dict) -> dict:
+    """Google GenAI API 相容端點的核心邏輯,可被 streaming / non-streaming 共用。"""
 
-    body = await request.json()
+    # 透過 adapter 把完整 request body (含 systemInstruction / tools / 多輪歷史)
+    # 攤平成單段 prompt。has_function_tools 決定後續是否要嘗試解析 tool_call。
+    prompt, has_function_tools, allowed_tool_names = build_prompt(body)
 
-    prompt_parts = []
-    contents = body.get("contents", [])
-    for content in contents:
-        for part in content.get("parts", []):
-            if "text" in part:
-                prompt_parts.append(part["text"])
-    prompt = "\n".join(prompt_parts)
+    # Debug: 觀察 prompt 規模,multi-turn 累積後可能超大導致 Gemini Web 卡住
+    contents_count = len(body.get("contents", []) or [])
+    logger.info(
+        "openclaw request: prompt=%d chars, turns=%d, tools=%d, has_tool_call=%s",
+        len(prompt), contents_count, len(allowed_tool_names), has_function_tools,
+    )
 
-    if not prompt:
-        raise HTTPException(status_code=400, detail="No text content in request")
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="No content in request")
 
-    tools = body.get("tools", [])
+    tools = body.get("tools", []) or []
     has_google_search = any(
         "google_search" in t or "googleSearch" in t
         for t in tools
@@ -169,7 +171,8 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
     )
 
     # 強制 JSON 回應（模擬 responseMimeType: application/json）
-    if response_mime == "application/json" and not is_image:
+    # 注意: 若已注入 tool_call 指令就不再疊加,避免兩種 JSON 規範打架。
+    if response_mime == "application/json" and not is_image and not has_function_tools:
         prompt = (
             "You MUST respond in valid JSON format only. "
             "No markdown, no code blocks, no extra explanation. "
@@ -196,7 +199,7 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
         }
 
     # JSON 回應清理（Gemini 網頁版可能加 "JSON\n" 前綴或 code block）
-    if not is_image and result.get("text"):
+    if not is_image and result.get("text") and not has_function_tools:
         import re
         text = result["text"].strip()
         # 去掉 ```json ... ``` code block
@@ -209,7 +212,7 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
         result["text"] = text
 
     if is_image:
-        parts = []
+        parts: list[dict] = []
         for img_data in result.get("images", []):
             if "," in img_data:
                 header, b64 = img_data.split(",", 1)
@@ -218,8 +221,13 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
                 b64 = img_data
                 mime = "image/png"
             parts.append({"inlineData": {"mimeType": mime, "data": b64}})
+        finish_reason = "STOP"
     else:
-        parts = [{"text": result.get("text", "")}]
+        parts, finish_reason = build_response_parts(
+            result.get("text", ""),
+            has_function_tools,
+            allowed_tool_names=allowed_tool_names,
+        )
 
     return {
         "candidates": [
@@ -228,8 +236,57 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
                     "parts": parts,
                     "role": "model",
                 },
-                "finishReason": "STOP",
+                "finishReason": finish_reason,
             }
         ],
         "modelVersion": model,
     }
+
+
+# ── 對外 endpoints (含 /v1beta 與根路徑兩種前綴) ─────────────────────
+
+
+@app.post("/v1beta/models/{model}:generateContent")
+@app.post("/models/{model}:generateContent")
+async def genai_generate_content(model: str, request: Request, key: str = Query(default=None)):
+    """Google GenAI API 相容端點 (非串流)"""
+    _verify_api_key(request, key)
+    body = await request.json()
+    return await _generate_content_impl(model, body)
+
+
+@app.post("/v1beta/models/{model}:streamGenerateContent")
+@app.post("/models/{model}:streamGenerateContent")
+async def genai_stream_generate_content(
+    model: str,
+    request: Request,
+    key: str = Query(default=None),
+    alt: str = Query(default="sse"),
+):
+    """
+    Google GenAI API 相容端點 (串流)。
+
+    Gemini Web 本身沒有 streaming,所以這裡假裝串流:
+    完整跑完非串流邏輯後,把結果一次性以 SSE 格式吐出。
+    對 openclaw 而言看起來就是「只收到一個 chunk 就結束」的串流。
+    """
+    _verify_api_key(request, key)
+    body = await request.json()
+
+    async def event_stream():
+        try:
+            result = await _generate_content_impl(model, body)
+        except HTTPException as e:
+            err = {"error": {"code": e.status_code, "message": e.detail, "status": "FAILED_PRECONDITION"}}
+            yield f"data: {json.dumps(err)}\n\n"
+            return
+        except Exception as e:
+            err = {"error": {"code": 500, "message": str(e), "status": "INTERNAL"}}
+            yield f"data: {json.dumps(err)}\n\n"
+            return
+
+        # 一次吐出完整結果。Google SSE 格式: 每筆事件都是 `data: <json>\n\n`
+        yield f"data: {json.dumps(result)}\n\n"
+
+    media_type = "text/event-stream" if alt == "sse" else "application/json"
+    return StreamingResponse(event_stream(), media_type=media_type)

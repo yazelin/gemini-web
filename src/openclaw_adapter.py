@@ -76,7 +76,9 @@ def _stringify_part(part: dict[str, Any]) -> str:
             args_json = json.dumps(args, ensure_ascii=False)
         except (TypeError, ValueError):
             args_json = str(args)
-        return f"[tool_call] {name}({args_json})"
+        # 用 PAST_TOOL_INVOCATION 標記 (而不是 [tool_call] 之類接近指令格式的字串),
+        # 避免 LLM 看歷史時誤以為這是「tool call 的合法格式」並模仿。
+        return f"<PAST_TOOL_INVOCATION name={name}>{args_json}</PAST_TOOL_INVOCATION>"
 
     if "functionResponse" in part:
         fr = part["functionResponse"] or {}
@@ -86,7 +88,7 @@ def _stringify_part(part: dict[str, Any]) -> str:
             resp_json = json.dumps(response, ensure_ascii=False)
         except (TypeError, ValueError):
             resp_json = str(response)
-        return f"[tool_result:{name}] {resp_json}"
+        return f"<PAST_TOOL_RESULT name={name}>{resp_json}</PAST_TOOL_RESULT>"
 
     if "inlineData" in part:
         mime = (part.get("inlineData") or {}).get("mimeType", "binary")
@@ -250,8 +252,67 @@ def _try_extract_json_object(text: str) -> dict[str, Any] | None:
                     if isinstance(obj, dict):
                         return obj
                 except (json.JSONDecodeError, ValueError):
-                    return None
+                    break  # 嘗試 rescue parser
     return None
+
+
+# 偵測 tool_call 結構並用 regex rescue 解析。
+# 用途: Gemini 輸出 JSON 時偶爾忘了 escape 內部 double quote (例如 shell 命令含
+# `grep -oP "regex"`),導致 json.loads 失敗。Rescue parser 假設 outer 結構固定為
+# {"tool_call":{"name":"X","args":{<single key>:"<value>"}}},直接 regex 抓出
+# 三段資料,對 value 內容寬鬆 (允許任何字元包含未 escape 的引號)。
+# 識別 `[tool_call] tool_name({args_json})` 這類「文字標記」格式 — Mori 偶爾會
+# 模仿 prompt 歷史中的舊格式而不是用 JSON,這個 pattern 救它一手。
+_LEGACY_TOOL_CALL = re.compile(
+    r"\[tool_call\]\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\((\{.*\})\s*\)\s*$",
+    re.DOTALL,
+)
+_RESCUE_NAME = re.compile(r'"name"\s*:\s*"([A-Za-z_][A-Za-z0-9_-]*)"')
+_RESCUE_ARGS_BODY = re.compile(
+    r'"args"\s*:\s*\{(.*?)\}\s*\}\s*\}\s*$', re.DOTALL
+)
+_RESCUE_FIRST_KEY_VALUE = re.compile(
+    r'^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:\s*"(.*)"\s*$', re.DOTALL
+)
+
+
+def _rescue_parse_tool_call(text: str) -> dict[str, Any] | None:
+    """
+    JSON parse 失敗時的 rescue 邏輯。
+
+    Gemini 在 tool_call args 內常忘了 escape 雙引號 (例如 grep regex 含
+    "href='...'"),json.loads 直接爆掉。這個 rescue parser 用 regex 跳過
+    嚴格的字串解析,直接抓出結構性資訊。
+
+    僅支援 single-key args (大多 tool 主參數只有一個,例如 exec.command,
+    read.path,write.content)。
+    """
+    cleaned = _strip_code_fence(text)
+    if "tool_call" not in cleaned and '"name"' not in cleaned:
+        return None
+
+    name_match = _RESCUE_NAME.search(cleaned)
+    if not name_match:
+        return None
+    name = name_match.group(1)
+
+    args_match = _RESCUE_ARGS_BODY.search(cleaned)
+    if not args_match:
+        return None
+    args_body = args_match.group(1)
+
+    kv_match = _RESCUE_FIRST_KEY_VALUE.match(args_body)
+    if not kv_match:
+        return None
+    key = kv_match.group(1)
+    value = kv_match.group(2)
+
+    return {
+        "tool_call": {
+            "name": name,
+            "args": {key: value},
+        }
+    }
 
 
 def parse_tool_call(
@@ -276,7 +337,27 @@ def parse_tool_call(
     if not text or not text.strip():
         return None
 
-    obj = _try_extract_json_object(text)
+    # 先試 `[tool_call] name({args})` 文字標記格式 (Mori 模仿歷史時偶爾用)
+    legacy = _LEGACY_TOOL_CALL.search(text.strip())
+    if legacy:
+        name = legacy.group(1)
+        args_text = legacy.group(2)
+        try:
+            args_obj = json.loads(args_text)
+            if isinstance(args_obj, dict):
+                obj = {"tool_call": {"name": name, "args": args_obj}}
+            else:
+                obj = None
+        except (json.JSONDecodeError, ValueError):
+            obj = None
+    else:
+        obj = None
+
+    if obj is None:
+        obj = _try_extract_json_object(text)
+    if obj is None:
+        # 標準 JSON parser 失敗,嘗試 rescue parser (處理未 escape 引號等)
+        obj = _rescue_parse_tool_call(text)
     if obj is None:
         return None
 

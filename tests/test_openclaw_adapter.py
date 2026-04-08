@@ -103,14 +103,14 @@ def test_build_prompt_flattens_multi_turn_with_tool_history():
     prompt, has_tools, _ = build_prompt(body)
     assert has_tools is True
     assert "Search Python" in prompt
-    assert "[tool_call] web_search" in prompt
-    assert "[tool_result:web_search]" in prompt
+    assert "PAST_TOOL_INVOCATION" in prompt
+    assert "PAST_TOOL_RESULT" in prompt
     assert "python.org" in prompt
     assert "Now summarize" in prompt
     # 順序正確
-    assert prompt.index("Search Python") < prompt.index("[tool_call]")
-    assert prompt.index("[tool_call]") < prompt.index("[tool_result")
-    assert prompt.index("[tool_result") < prompt.index("Now summarize")
+    assert prompt.index("Search Python") < prompt.index("PAST_TOOL_INVOCATION")
+    assert prompt.index("PAST_TOOL_INVOCATION") < prompt.index("PAST_TOOL_RESULT")
+    assert prompt.index("PAST_TOOL_RESULT") < prompt.index("Now summarize")
 
 
 # ── parse_tool_call ──────────────────────────────────────────────────
@@ -220,6 +220,50 @@ def test_build_response_parts_unknown_tool_falls_back_to_text():
     )
     # 因為名稱不在白名單,退回純文字
     assert parts == [{"text": text}]
+
+
+def test_parse_tool_call_rescue_unescaped_double_quote():
+    """Gemini 偶爾忘了 escape 內部引號 (例如 grep regex),rescue parser 應該救回。"""
+    text = '{"tool_call": {"name": "exec", "args": {"command": "grep -oP "pattern" file.txt"}}}'
+    result = parse_tool_call(text, allowed_names={"exec"})
+    assert result is not None
+    assert result["name"] == "exec"
+    assert "grep -oP" in result["args"]["command"]
+
+
+def test_parse_tool_call_rescue_complex_shell_command():
+    """真實 case:Mori 的 grep regex with single+double quotes 混用。"""
+    text = (
+        '{"tool_call": {"name": "exec", "args": {"command": '
+        '"cd /tmp/x && cat state.json && echo \'---URLS---\' && '
+        '(jq -r \'.[0:10] | .[]? | .content?\' docs/notes.json | '
+        'grep -oP "href=\'\\K[^\']+" || true)"}}}'
+    )
+    result = parse_tool_call(text, allowed_names={"exec"})
+    assert result is not None
+    assert result["name"] == "exec"
+    assert "grep -oP" in result["args"]["command"]
+    assert "jq -r" in result["args"]["command"]
+
+
+def test_parse_tool_call_legacy_text_format():
+    """Mori 偶爾模仿 prompt history 中的舊文字格式 [tool_call] name({args})。
+    Parser 應該能識別並轉成正常 tool call。"""
+    text = '[tool_call] exec({"command": "sleep 2"})'
+    result = parse_tool_call(text, allowed_names={"exec"})
+    assert result == {"name": "exec", "args": {"command": "sleep 2"}}
+
+
+def test_parse_tool_call_history_marker_not_misparsed():
+    """新的 PAST_TOOL_INVOCATION 標記不該被誤判為 tool call。"""
+    text = '<PAST_TOOL_INVOCATION name=exec>{"command": "sleep 2"}</PAST_TOOL_INVOCATION>'
+    assert parse_tool_call(text, allowed_names={"exec"}) is None
+
+
+def test_parse_tool_call_rescue_respects_allowlist():
+    """Rescue parser 也要被白名單擋住。"""
+    text = '{"tool_call": {"name": "delete_everything", "args": {"path": "/"}}}'
+    assert parse_tool_call(text, allowed_names={"exec"}) is None
 
 
 def test_build_prompt_returns_allowed_names_set():

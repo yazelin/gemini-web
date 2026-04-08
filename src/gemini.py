@@ -212,8 +212,9 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                 SELECTORS["images"], state="visible", timeout=wait_ms
             )
             logger.info("偵測到圖片元素")
-            # 圖片出現後再等幾秒確保完全載入（含 class .loaded）
-            await asyncio.sleep(3)
+            # 圖片出現後再等 1 秒確保 hover 按鈕可用 (從 3 秒縮短)
+            # 因為 openclaw 對 image gen 有 60 秒硬編碼 timeout
+            await asyncio.sleep(1)
         except Exception:
             # 圖片沒出現，可能是文字回覆或被拒絕，也等一下再檢查
             logger.info("未偵測到圖片，等待回應文字...")
@@ -267,8 +268,10 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                         await asyncio.sleep(0.5)
                     await btn.hover()
                     await asyncio.sleep(0.3)
-                    # 用 JS click（更可靠）+ 長 timeout（伺服器需要時間生成原尺寸）
-                    async with page.expect_download(timeout=240_000) as download_info:
+                    # 用 JS click（更可靠）+ 30 秒 timeout（從 240 秒縮短;
+                    # 大多數情況下載 < 10 秒,取此值留充裕 buffer 但避開 openclaw
+                    # 60 秒 image gen timeout）
+                    async with page.expect_download(timeout=30_000) as download_info:
                         await page.evaluate("btn => btn.click()", btn)
                     download = await download_info.value
                     logger.info("圖片 %d：下載事件觸發，等待檔案寫入...", i)
@@ -393,12 +396,14 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
             elapsed = round(time.time() - start, 1)
             return _error("no_response", "Gemini 未回應", elapsed)
 
-        # 等文字穩定（連續 2 次內容不變 = 完成）
-        # 上限 30 秒。已經偵測到 model-response 之後,Gemini 串流文字通常 5-15 秒
-        # 內結束。若頁面有動態元素 (時間戳/廣告) 導致 text 一直變,30 秒後強制跳出。
+        # 等回應完成。三個結束條件,任一觸發就跳出:
+        #   (a) 文字連續 2 次不變且 stop generating 按鈕已消失 = 真正完成
+        #   (b) 文字連續 4 次不變 (即使 stop button 還在) = 也視為完成 (按鈕可能延遲消失)
+        #   (c) 跑滿 90 秒上限 = 強制跳出
+        # 90 秒是給 Pro 模式留的 buffer (Pro stream 通常 20-40 秒,Flash 5-15 秒)
         prev_text = ""
         stable_count = 0
-        for _ in range(30):
+        for _ in range(90):
             await asyncio.sleep(1)
             response_els = await page.query_selector_all(SELECTORS["response"])
             if not response_els:
@@ -406,7 +411,13 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
             text = (await response_els[-1].inner_text()).strip()
             if text and text == prev_text:
                 stable_count += 1
+                # 條件 (a): stable + stop 按鈕消失
                 if stable_count >= 2:
+                    stop_btn = await page.query_selector(SELECTORS["stop_generating"])
+                    if not stop_btn:
+                        break
+                # 條件 (b): 連 4 次穩定 (4 秒沒動) 直接跳出,不管按鈕
+                if stable_count >= 4:
                     break
             else:
                 stable_count = 0

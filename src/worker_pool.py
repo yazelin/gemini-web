@@ -26,6 +26,11 @@ class WorkerPool:
         self._max_waiting = max_waiting
         self._workers: list[BrowserManager] = []
         self._locks: list[asyncio.Lock] = []
+        # 每個 worker 的「待完成 reset」task。下次請求進來時必須先 await
+        # 這個 task,確保上一次的對話已經乾淨重置才開始新請求。
+        # 但 _run 不會 block 在 reset 上 — 它會提前 return result,讓 client
+        # (例如 openclaw) 在 60 秒 timeout 內收到回應。
+        self._pending_resets: list[asyncio.Task | None] = []
         self._waiting = 0
 
     async def start(self) -> None:
@@ -36,6 +41,7 @@ class WorkerPool:
             await bm.start()
             self._workers.append(bm)
             self._locks.append(asyncio.Lock())
+            self._pending_resets.append(None)
             logger.info("Worker %d 已啟動（profile: %s）", i, profile_dir)
 
     async def stop(self) -> None:
@@ -111,6 +117,15 @@ class WorkerPool:
 
         logger.info("Worker %d 處理請求：%s", worker_id, kind)
 
+        # 上一次的 reset 還沒做完?先等它完成,保證頁面狀態乾淨
+        prev_reset = self._pending_resets[worker_id]
+        if prev_reset is not None and not prev_reset.done():
+            try:
+                await prev_reset
+            except Exception as e:
+                logger.warning("Worker %d 上次 reset 失敗: %s", worker_id, e)
+        self._pending_resets[worker_id] = None
+
         if model:
             await switch_model(page, model)
 
@@ -123,7 +138,10 @@ class WorkerPool:
                     None, _remove_watermarks, result["images"]
                 )
 
-        await new_chat(page)
+        # Fire-and-forget reset:return result 後在背景重置對話頁面。
+        # 下次 _run 進來時會 await 這個 task,確保乾淨狀態。
+        # 對 image gen 特別重要 — openclaw 對 image gen 有 60 秒硬編碼 timeout。
+        self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
         return result
 
     async def worker_status(self) -> list[dict]:

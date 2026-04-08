@@ -268,11 +268,10 @@ _LEGACY_TOOL_CALL = re.compile(
     re.DOTALL,
 )
 _RESCUE_NAME = re.compile(r'"name"\s*:\s*"([A-Za-z_][A-Za-z0-9_-]*)"')
-_RESCUE_ARGS_BODY = re.compile(
-    r'"args"\s*:\s*\{(.*?)\}\s*\}\s*\}\s*$', re.DOTALL
-)
-_RESCUE_FIRST_KEY_VALUE = re.compile(
-    r'^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:\s*"(.*)"\s*$', re.DOTALL
+_RESCUE_ARGS_OPEN = re.compile(r'"args"\s*:\s*\{')
+# 找 args dict 的下一個 key (用 lookahead `(?:^|,)` 確保是 key 不是字串內容)
+_RESCUE_ARG_KEY = re.compile(
+    r'(?:^|,)\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:\s*'
 )
 
 
@@ -280,14 +279,20 @@ def _rescue_parse_tool_call(text: str) -> dict[str, Any] | None:
     """
     JSON parse 失敗時的 rescue 邏輯。
 
-    Gemini 在 tool_call args 內常忘了 escape 雙引號 (例如 grep regex 含
-    "href='...'"),json.loads 直接爆掉。這個 rescue parser 用 regex 跳過
-    嚴格的字串解析,直接抓出結構性資訊。
+    Gemini 經常產出帶未 escape 引號的「假 JSON」,例如:
 
-    僅支援 single-key args (大多 tool 主參數只有一個,例如 exec.command,
-    read.path,write.content)。
+        {"tool_call": {"name": "exec", "args": {
+            "command": "bash foo.sh --prompt "a red apple"",
+            "timeout": 180
+        }}}
+
+    這個 rescue 不依賴 json.loads,而是用 regex 抓出已知的結構性 key:
+    - name: 從 "name": "X" 抓 X
+    - args: 從 "args": { ... }} 區塊用 key 邊界 regex 切出每個 key/value
+      - 字串值: 容忍中間的未 escape 引號
+      - 數字/bool/null: 用 json.loads 個別解析
     """
-    cleaned = _strip_code_fence(text)
+    cleaned = _strip_code_fence(text).strip()
     if "tool_call" not in cleaned and '"name"' not in cleaned:
         return None
 
@@ -296,21 +301,61 @@ def _rescue_parse_tool_call(text: str) -> dict[str, Any] | None:
         return None
     name = name_match.group(1)
 
-    args_match = _RESCUE_ARGS_BODY.search(cleaned)
-    if not args_match:
+    args_open = _RESCUE_ARGS_OPEN.search(cleaned)
+    if not args_open:
         return None
-    args_body = args_match.group(1)
+    args_start = args_open.end()  # 第一個 { 之後
 
-    kv_match = _RESCUE_FIRST_KEY_VALUE.match(args_body)
-    if not kv_match:
+    # 用反向尋找抓 args 結束位置: 結尾應該是三個閉合 }}} (envelope)
+    end_match = re.search(r"\}\s*\}\s*\}\s*$", cleaned)
+    if not end_match:
         return None
-    key = kv_match.group(1)
-    value = kv_match.group(2)
+    args_end = end_match.start()
+    if args_end <= args_start:
+        return None
+
+    args_body = cleaned[args_start:args_end]
+
+    # 用 key boundary regex 找出所有 key 起點
+    key_matches = list(_RESCUE_ARG_KEY.finditer(args_body))
+    if not key_matches:
+        return None
+
+    args: dict[str, Any] = {}
+    for i, m in enumerate(key_matches):
+        key = m.group(1)
+        value_start = m.end()
+        value_end = key_matches[i + 1].start() if i + 1 < len(key_matches) else len(args_body)
+        raw_value = args_body[value_start:value_end].rstrip(", \t\n\r")
+
+        if not raw_value:
+            continue
+
+        if raw_value.startswith('"'):
+            # 字串值: 去掉首引號,結尾找最後一個引號 (容忍中間未 escape 的引號)
+            inner = raw_value[1:]
+            if inner.endswith('"'):
+                inner = inner[:-1]
+            else:
+                # 罕見: 結尾沒引號,可能整個 value 都是字串內容
+                last_q = inner.rfind('"')
+                if last_q >= 0:
+                    inner = inner[:last_q]
+            args[key] = inner
+        else:
+            # 嘗試當 number / bool / null
+            try:
+                args[key] = json.loads(raw_value)
+            except (json.JSONDecodeError, ValueError):
+                args[key] = raw_value
+
+    if not args:
+        return None
 
     return {
         "tool_call": {
             "name": name,
-            "args": {key: value},
+            "args": args,
         }
     }
 

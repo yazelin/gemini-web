@@ -54,7 +54,7 @@ def test_worker_profile_dir_zero(monkeypatch):
     monkeypatch.delenv("PROFILE_DIR", raising=False)
     path = get_worker_profile_dir(0)
     assert path.endswith("profiles")
-    assert "-" not in path.split("/")[-1]
+    assert "-" not in os.path.basename(path)
 
 
 def test_worker_profile_dir_nonzero(monkeypatch):

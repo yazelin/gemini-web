@@ -1,5 +1,6 @@
 """Gemini 頁面互動 — 輸入 prompt、等待生成、擷取圖片或文字回應"""
 import asyncio
+import json
 import logging
 import time
 
@@ -138,16 +139,6 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
         {"success": True, "images": [...], "prompt": ..., "elapsed_seconds": ...}
         或 {"success": False, "error": ..., "message": ...}
     """
-    # 確保 prompt 明確要求生圖（避免 Gemini 當成搜尋）
-    prompt_lower = prompt.lower().strip()
-    needs_prefix = not any(kw in prompt_lower for kw in [
-        "draw", "paint", "generate", "create an image", "create a picture",
-        "make an image", "make a picture", "illustrate",
-        "畫", "繪", "生成圖", "生成一張", "做一張", "設計",
-    ])
-    if needs_prefix:
-        prompt = f"Generate an image: {prompt}"
-
     start = time.time()
 
     try:
@@ -173,6 +164,56 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
             await asyncio.sleep(0.5)
         except Exception:
             pass
+
+        # 1.7 點擊 Tools → Create image 進入圖片生成模式
+        switched_to_create_image = False
+        try:
+            # Debug: 列出頁面上所有按鈕
+            all_btns = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('button')).map(b => ({
+                    text: b.innerText.trim().substring(0, 50),
+                    aria: (b.getAttribute('aria-label') || '').substring(0, 50),
+                })).filter(b => b.text || b.aria);
+            }""")
+            logger.info("頁面按鈕: %s", json.dumps(all_btns, ensure_ascii=False)[:500])
+
+            # 等 Tools 按鈕出現（頁面載入後可能需要幾秒）
+            tools_btn = await page.wait_for_selector(
+                SELECTORS["tools_button"], state="visible", timeout=8_000
+            )
+            if tools_btn:
+                await tools_btn.click()
+                logger.info("已點擊 Tools 按鈕，等待選單...")
+                await asyncio.sleep(1.5)
+                # 等 Create image 按鈕出現
+                create_img_btn = await page.wait_for_selector(
+                    SELECTORS["create_image"], state="visible", timeout=5_000
+                )
+                if create_img_btn:
+                    # 縮短 click timeout，避免 selector 過時時卡 30 秒重試
+                    await create_img_btn.click(timeout=5_000)
+                    await asyncio.sleep(2)
+                    logger.info("已切換至 Create image 模式")
+                    switched_to_create_image = True
+                    # 重新取得輸入框（模式切換後可能會刷新）
+                    input_el = await page.wait_for_selector(
+                        SELECTORS["input"], state="visible", timeout=10_000
+                    )
+                else:
+                    logger.warning("找不到 Create image 按鈕，使用 prefix fallback")
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.warning("切換 Create image 模式失敗：%s，使用 prefix fallback", e)
+            # 確保關閉可能開啟的選單
+            try:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+        if not switched_to_create_image:
+            prompt = f"Generate an image: {prompt}"
 
         # 2. 輸入 prompt（用 JS 直接寫入 + 模擬 Ctrl+V 貼上事件）
         await input_el.click()

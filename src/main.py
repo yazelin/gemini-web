@@ -265,7 +265,7 @@ async def _generate_content_impl(model: str, body: dict) -> dict:
                 "finishReason": finish_reason,
             }
         ],
-        "modelVersion": model,
+        "modelVersion": result.get("actual_model", model) if is_image else model,
     }
 
 

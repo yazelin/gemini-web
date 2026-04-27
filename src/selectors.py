@@ -1,7 +1,7 @@
 """Gemini 頁面 DOM selector 集中管理
 
 Gemini 改版時只需更新此檔案的 selector 值。
-最後校準日期：2026-03-30
+最後校準日期：2026-04-27
 """
 
 # API model name → Gemini 網頁版模式名稱
@@ -25,6 +25,13 @@ MODEL_MODE_MAP = {
     "gemini-3.1-pro": "Pro",
     "gemini-3.1-pro-preview": "Pro",
     "pro": "Pro",
+}
+
+# 圖片生成失敗時的 fallback model（Pro → Flash）
+IMAGE_FALLBACK_MAP = {
+    "gemini-3-pro-image-preview": "gemini-3.1-flash-image-preview",
+    "gemini-3.1-pro": "gemini-3.1-flash",
+    "gemini-3-pro": "gemini-3-flash",
 }
 
 SELECTORS = {
@@ -56,4 +63,19 @@ SELECTORS = {
     "mode_picker": "button[aria-label='開啟模式挑選器'], button[aria-label='Open mode picker']",
     "mode_menu_item": "button[role='menuitem']",
     "mode_title": ".mode-title",
+
+    # Tools 選單（圖片生成模式）
+    "tools_button": "button:has-text('Tools'), button:has-text('工具'), button:has(img[alt='page_info'])",
+    # Scope 限制在 cdk-overlay 內，避免誤抓 composer 的「上傳圖片」按鈕
+    # 涵蓋「建立圖像」「建立圖片」兩種命名（Gemini 改版後文字會變動）
+    "create_image": (
+        ".cdk-overlay-container button:has-text('建立圖像'), "
+        ".cdk-overlay-container button:has-text('建立圖片'), "
+        ".cdk-overlay-container button:has-text('生成圖像'), "
+        ".cdk-overlay-container button:has-text('生成圖片'), "
+        ".cdk-overlay-container button:has-text('Create image'), "
+        "button[role='menuitem']:has-text('建立圖像'), "
+        "button[role='menuitem']:has-text('建立圖片'), "
+        "button[role='menuitem']:has-text('Create image')"
+    ),
 }

@@ -3,12 +3,14 @@ import asyncio
 import base64
 import logging
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 from .browser import BrowserManager
 from .config import settings, get_worker_profile_dir
 from .gemini import chat, generate_image, new_chat, switch_model
+from .selectors import IMAGE_FALLBACK_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,7 @@ class WorkerPool:
             return {"success": False, "error": "browser_error", "message": f"Worker {worker_id} 瀏覽器未啟動"}
 
         logger.info("Worker %d 處理請求：%s", worker_id, kind)
+        start = time.time()
 
         # 上一次的 reset 還沒做完?先等它完成,保證頁面狀態乾淨
         prev_reset = self._pending_resets[worker_id]
@@ -133,6 +136,24 @@ class WorkerPool:
             result = await chat(page, prompt, timeout)
         else:
             result = await generate_image(page, prompt, timeout)
+
+            # Pro 圖片生成失敗 → 自動 fallback 到 Flash 重試
+            fallback_model = IMAGE_FALLBACK_MAP.get(model) if model else None
+            if fallback_model and not result.get("success"):
+                logger.info(
+                    "Worker %d 圖片生成失敗（%s: %s），fallback 到 %s 重試",
+                    worker_id, model, result.get("error", ""), fallback_model,
+                )
+                await new_chat(page)
+                await switch_model(page, fallback_model)
+                remaining = timeout - int(time.time() - start)
+                if remaining > 30:
+                    result = await generate_image(page, prompt, remaining)
+                    if result.get("success"):
+                        result["actual_model"] = fallback_model
+                else:
+                    logger.warning("Worker %d fallback 剩餘時間不足 (%ds)，跳過", worker_id, remaining)
+
             if result.get("success") and result.get("images"):
                 result["images"] = await asyncio.get_event_loop().run_in_executor(
                     None, _remove_watermarks, result["images"]

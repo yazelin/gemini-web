@@ -15,6 +15,8 @@ After=network.target
 Type=simple
 User=${USER}
 WorkingDirectory=${WORK_DIR}
+# 啟動前殺掉其他佔用 profile 的 process（避免搶 session）
+ExecStartPre=/usr/bin/bash -c 'pkill -f "[g]emini-web serve" || true; pkill -f "[c]hrome.*gemini-image/profiles" || true; sleep 1'
 ExecStart=${WORK_DIR}/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8070
 Restart=on-failure
 RestartSec=10
@@ -29,5 +31,5 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable ${SERVICE_NAME}
-sudo systemctl start ${SERVICE_NAME}
+sudo systemctl restart ${SERVICE_NAME}
 echo "✓ ${SERVICE_NAME} 服務已安裝並啟動"

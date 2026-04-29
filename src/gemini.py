@@ -370,6 +370,283 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
         return _error("browser_error", str(e), elapsed)
 
 
+async def edit_image(
+    page: Page,
+    prompt: str,
+    reference_image_b64: str,
+    timeout: int = 120,
+) -> dict:
+    """以參考圖編輯模式生成圖片：上傳 reference 圖 + 文字 prompt → 編輯後的新圖
+
+    Args:
+        page: 已開啟 Gemini 對話的 Playwright Page
+        prompt: 編輯指令（建議英文，例：「change the dog's color to black」）
+        reference_image_b64: 參考圖。可以是 data:image/...;base64,xxx 或純 base64 字串
+        timeout: 整體 timeout 秒數
+
+    Returns:
+        同 generate_image：
+        {"success": True, "images": [...], "prompt": ..., "elapsed_seconds": ...}
+        或 {"success": False, "error": ..., "message": ...}
+    """
+    import base64 as _b64
+    import os
+    import tempfile
+
+    start = time.time()
+
+    # 將 reference_image 寫到暫存檔，給 Playwright set_input_files 用
+    raw = reference_image_b64
+    if raw.startswith("data:"):
+        # data:image/jpeg;base64,xxx → 拆出 b64 部分
+        try:
+            _, raw = raw.split(",", 1)
+        except ValueError:
+            return _error("invalid_input", "reference_image 格式錯誤")
+    try:
+        img_bytes = _b64.b64decode(raw)
+    except Exception:
+        return _error("invalid_input", "reference_image 不是有效的 base64")
+    if len(img_bytes) > 10 * 1024 * 1024:
+        return _error("invalid_input", "reference_image 超過 10 MB")
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="gemini_ref_")
+    os.close(tmp_fd)
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(img_bytes)
+
+        # 1. 確認輸入框就緒
+        input_el = await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=15_000
+        )
+        if not input_el:
+            return _error("browser_error", "找不到輸入框")
+        await asyncio.sleep(1)
+
+        # 1.5 清 overlay（可能殘留 Deep Research 之類）
+        try:
+            await page.evaluate("""() => {
+                document.querySelectorAll('.cdk-overlay-container').forEach(el => {
+                    el.innerHTML = '';
+                });
+            }""")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
+        # 1.7 切到 Create image 模式（沿用 generate_image 同邏輯）
+        switched_to_create_image = False
+        try:
+            tools_btn = await page.wait_for_selector(
+                SELECTORS["tools_button"], state="visible", timeout=8_000
+            )
+            if tools_btn:
+                await tools_btn.click()
+                await asyncio.sleep(1.5)
+                create_img_btn = await page.wait_for_selector(
+                    SELECTORS["create_image"], state="visible", timeout=5_000
+                )
+                if create_img_btn:
+                    await create_img_btn.click(timeout=5_000)
+                    await asyncio.sleep(2)
+                    switched_to_create_image = True
+                    input_el = await page.wait_for_selector(
+                        SELECTORS["input"], state="visible", timeout=10_000
+                    )
+                else:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.warning("切換 Create image 模式失敗：%s，繼續嘗試上傳", e)
+            try:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+        # 2. 上傳 reference image — 用 expect_file_chooser 攔截 file dialog
+        logger.info("點擊上傳按鈕、等 file chooser...")
+        try:
+            async with page.expect_file_chooser(timeout=10_000) as fc_info:
+                await page.click(SELECTORS["upload_button"])
+            file_chooser = await fc_info.value
+            await file_chooser.set_files(tmp_path)
+            logger.info("已 set_files：%s（%d bytes）", tmp_path, len(img_bytes))
+        except Exception as e:
+            elapsed = round(time.time() - start, 1)
+            return _error(
+                "upload_failed",
+                f"上傳 reference image 失敗：{e}",
+                elapsed,
+            )
+
+        # 3. 等預覽圖出現（blob: img 是 Gemini 上傳完成的指標）
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const imgs = Array.from(document.querySelectorAll('img'));
+                    return imgs.some(img => {
+                        const src = img.src || '';
+                        return src.startsWith('blob:') && (img.naturalWidth || 0) > 30;
+                    });
+                }""",
+                timeout=20_000,
+            )
+            logger.info("reference image 預覽已出現")
+            await asyncio.sleep(1)  # 多等一點讓 UI stabilize
+        except Exception:
+            elapsed = round(time.time() - start, 1)
+            return _error(
+                "upload_timeout",
+                "上傳檔案後 20 秒內沒看到預覽，可能上傳未成功",
+                elapsed,
+            )
+
+        # 4. 輸入 prompt（同 generate_image 的 paste pattern）
+        if not prompt.strip():
+            prompt = "edit this image"
+        # Create image 沒切到時前綴提示，否則直接送 prompt
+        final_prompt = prompt if switched_to_create_image else f"Edit this image: {prompt}"
+
+        await input_el.click()
+        await asyncio.sleep(0.3)
+        await input_el.evaluate("""(el, text) => {
+            el.focus();
+            const dt = new DataTransfer();
+            dt.setData('text/plain', text);
+            const pasteEvent = new ClipboardEvent('paste', {
+                clipboardData: dt,
+                bubbles: true,
+                cancelable: true,
+            });
+            el.dispatchEvent(pasteEvent);
+            if (!el.textContent || el.textContent.trim().length === 0) {
+                el.innerText = text;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }""", final_prompt)
+        await asyncio.sleep(1)
+
+        # 5. 送出
+        await page.keyboard.press("Enter")
+        logger.info("已送出 edit prompt：%s", final_prompt[:80])
+
+        # 6. 等回應出現 — 同 generate_image 的策略
+        try:
+            wait_ms = max((timeout - 10), 30) * 1000
+            await page.wait_for_selector(
+                SELECTORS["images"], state="visible", timeout=wait_ms
+            )
+            logger.info("偵測到圖片元素")
+            await asyncio.sleep(3)
+        except Exception:
+            logger.info("未偵測到圖片，等待回應文字...")
+            await asyncio.sleep(5)
+
+        # 7. 檢查是否被拒絕
+        response_els = await page.query_selector_all(SELECTORS["response"])
+        if response_els:
+            last_response = response_els[-1]
+            text = (await last_response.inner_text()).strip()
+            for phrase in _BLOCK_PHRASES:
+                if phrase.lower() in text.lower():
+                    elapsed = round(time.time() - start, 1)
+                    return {
+                        "success": False,
+                        "error": "content_blocked",
+                        "message": text[:200],
+                        "elapsed_seconds": elapsed,
+                    }
+
+        # 8. 擷取生成的編輯圖（同 generate_image 抓圖邏輯：先試下載按鈕、再退 img.src）
+        import base64 as _b64x
+        img_els = await page.query_selector_all(SELECTORS["images"])
+        if not img_els:
+            text = ""
+            if response_els:
+                text = (await response_els[-1].inner_text()).strip()
+            elapsed = round(time.time() - start, 1)
+            return {
+                "success": False,
+                "error": "no_image",
+                "message": f"Gemini 未生成編輯後的圖片。回應內容：{text[:200]}",
+                "elapsed_seconds": elapsed,
+            }
+
+        download_btns = await page.query_selector_all(SELECTORS["download_image"])
+        logger.info("找到 %d 個圖片元素，%d 個下載按鈕", len(img_els), len(download_btns))
+
+        images = []
+        if download_btns:
+            for i, btn in enumerate(download_btns):
+                try:
+                    if img_els and i < len(img_els):
+                        await img_els[i].hover()
+                        await asyncio.sleep(0.5)
+                    await btn.hover()
+                    await asyncio.sleep(0.3)
+                    async with page.expect_download(timeout=120_000) as download_info:
+                        await page.evaluate("btn => btn.click()", btn)
+                    download = await download_info.value
+                    dl_path = await download.path()
+                    if dl_path:
+                        from pathlib import Path
+                        raw_bytes = Path(dl_path).read_bytes()
+                        b64 = _b64x.b64encode(raw_bytes).decode("ascii")
+                        suggested = download.suggested_filename or ""
+                        ct = "image/jpeg" if suggested.endswith((".jpg", ".jpeg")) else "image/png"
+                        images.append(f"data:{ct};base64,{b64}")
+                        logger.info("編輯圖 %d 下載成功，%d bytes", i, len(raw_bytes))
+                except Exception as e:
+                    logger.warning("編輯圖 %d 下載按鈕失敗：%s，改用 img src", i, e)
+
+        if not images:
+            for i, img_el in enumerate(img_els):
+                try:
+                    src = await img_el.get_attribute("src")
+                    if not src:
+                        continue
+                    if src.startswith("data:image"):
+                        # 排除 reference image 自己（雖然應該不在 generated-image 內）
+                        images.append(src)
+                    elif src.startswith("http"):
+                        resp = await page.context.request.get(src)
+                        if resp.ok:
+                            body = await resp.body()
+                            content_type = resp.headers.get("content-type", "image/png")
+                            b64 = _b64x.b64encode(body).decode("ascii")
+                            images.append(f"data:{content_type};base64,{b64}")
+                            logger.info("編輯圖 %d 從 src 下載，%d bytes", i, len(body))
+                except Exception as e:
+                    logger.warning("編輯圖 %d 擷取失敗：%s", i, e)
+
+        elapsed = round(time.time() - start, 1)
+        if not images:
+            return _error("browser_error", "圖片元素存在但無法擷取（詳見 server log）", elapsed)
+
+        return {
+            "success": True,
+            "images": images,
+            "prompt": prompt,
+            "elapsed_seconds": elapsed,
+        }
+
+    except asyncio.TimeoutError:
+        elapsed = round(time.time() - start, 1)
+        return _error("timeout", f"編輯圖片超時（{timeout}秒）", elapsed)
+    except Exception as e:
+        elapsed = round(time.time() - start, 1)
+        logger.exception("Gemini edit_image 互動發生錯誤")
+        return _error("browser_error", str(e), elapsed)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
 async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
     """在 Gemini 頁面輸入 prompt 並擷取文字回應
 

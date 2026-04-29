@@ -64,6 +64,19 @@ SELECTORS = {
     "mode_menu_item": "button[role='menuitem']",
     "mode_title": ".mode-title",
 
+    # 上傳檔案按鈕（圖片編輯時當作 reference 圖傳入）
+    # 點下去 Gemini 會開 file chooser dialog，不需要先找 hidden file input
+    # （Playwright 用 expect_file_chooser() 攔截）
+    "upload_button": (
+        "button.upload-card-button[aria-label='開啟上傳檔案選單'], "
+        "button.upload-card-button[aria-label='Open upload file menu']"
+    ),
+
+    # 上傳完成後的縮圖預覽
+    # Gemini 上傳預覽圖通常用 blob: URL，掛在 input bar 區域
+    # 用 img[src^='blob:'] 偵測；naturalWidth > 50 排除 spinner 之類
+    "upload_preview_blob": "img[src^='blob:']",
+
     # Tools 選單（圖片生成模式）
     "tools_button": "button:has-text('Tools'), button:has-text('工具'), button:has(img[alt='page_info'])",
     # Scope 限制在 cdk-overlay 內，避免誤抓 composer 的「上傳圖片」按鈕

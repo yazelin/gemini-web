@@ -32,7 +32,7 @@ async def test_dispatch_uses_available_worker(mock_browser_managers):
 
     call_log = []
 
-    async def fake_run(worker_id, kind, prompt, model, timeout):
+    async def fake_run(worker_id, kind, prompt, model, timeout, extra=None):
         call_log.append(kind)
         return {"success": True, "text": "ok"}
 
@@ -64,7 +64,7 @@ async def test_parallel_dispatch():
     pool._max_waiting = 10
     pool._waiting = 0
 
-    async def slow_run(worker_id, kind, prompt, model, timeout):
+    async def slow_run(worker_id, kind, prompt, model, timeout, extra=None):
         workers_used.append(worker_id)
         worker_events[worker_id].set()
         await asyncio.wait_for(worker_events[1 - worker_id].wait(), timeout=2)

@@ -51,6 +51,19 @@ class ChatRequest(BaseModel):
     timeout: int = 120
 
 
+class EditRequest(BaseModel):
+    """以參考圖編輯模式生成圖片。
+
+    reference_image 接受
+      - data URL（data:image/jpeg;base64,xxx）
+      - 純 base64 字串
+    最大 10 MB（base64 編碼後）
+    """
+    prompt: str
+    reference_image: str
+    timeout: int = settings.default_timeout
+
+
 # ── 端點 ──
 
 
@@ -71,6 +84,26 @@ async def api_chat(req: ChatRequest):
     """文字對話"""
     try:
         result = await worker_pool.dispatch("chat", req.prompt, "", req.timeout)
+    except QueueFullError:
+        raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+    return result
+
+
+@app.post("/api/edit")
+async def api_edit(req: EditRequest):
+    """以參考圖編輯模式生成圖片"""
+    if not req.reference_image:
+        raise HTTPException(status_code=400, detail="reference_image 不能為空")
+    try:
+        result = await worker_pool.dispatch(
+            "edit",
+            req.prompt,
+            "",
+            req.timeout,
+            extra={"reference_image": req.reference_image},
+        )
     except QueueFullError:
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:

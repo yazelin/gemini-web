@@ -52,8 +52,12 @@ class WorkerPool:
             await bm.stop()
             logger.info("Worker %d 已關閉", i)
 
-    async def dispatch(self, kind: str, prompt: str, model: str, timeout: int) -> dict:
+    async def dispatch(self, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
         """分配請求到空閒 worker，全忙則等待
+
+        Args:
+            kind: "chat" / "generate" / "edit"
+            extra: edit 模式用，dict 含 reference_image (base64 或 data URL 字串)
 
         Raises:
             QueueFullError: 等待數超過上限
@@ -65,20 +69,20 @@ class WorkerPool:
         self._waiting += 1
         try:
             return await asyncio.wait_for(
-                self._acquire_and_run(kind, prompt, model, timeout),
+                self._acquire_and_run(kind, prompt, model, timeout, extra),
                 timeout=timeout,
             )
         finally:
             self._waiting -= 1
 
-    async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int) -> dict:
+    async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
         """嘗試取得任意空閒 worker 的 lock，取得後執行請求"""
         while True:
             # Try to grab any unlocked worker
             for i, lock in enumerate(self._locks):
                 if not lock.locked():
                     async with lock:
-                        return await self._run(i, kind, prompt, model, timeout)
+                        return await self._run(i, kind, prompt, model, timeout, extra)
 
             # All busy — create a task per lock and wait for the first one
             acquire_tasks = {
@@ -102,7 +106,7 @@ class WorkerPool:
                 for task in done:
                     worker_id = acquire_tasks[task]
                     try:
-                        return await self._run(worker_id, kind, prompt, model, timeout)
+                        return await self._run(worker_id, kind, prompt, model, timeout, extra)
                     finally:
                         self._locks[worker_id].release()
             except Exception:
@@ -110,7 +114,7 @@ class WorkerPool:
                     task.cancel()
                 raise
 
-    async def _run(self, worker_id: int, kind: str, prompt: str, model: str, timeout: int) -> dict:
+    async def _run(self, worker_id: int, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
         """在指定 worker 上執行請求"""
         bm = self._workers[worker_id]
         page = bm.page
@@ -134,6 +138,18 @@ class WorkerPool:
 
         if kind == "chat":
             result = await chat(page, prompt, timeout)
+        elif kind == "edit":
+            from .gemini import edit_image
+            ref_b64 = (extra or {}).get("reference_image", "")
+            if not ref_b64:
+                self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
+                return {"success": False, "error": "invalid_input", "message": "edit 需要 reference_image"}
+            result = await edit_image(page, prompt, ref_b64, timeout)
+            # edit 模式同 generate：成功時做去浮水印
+            if result.get("success") and result.get("images"):
+                result["images"] = await asyncio.get_event_loop().run_in_executor(
+                    None, _remove_watermarks, result["images"]
+                )
         else:
             result = await generate_image(page, prompt, timeout)
 

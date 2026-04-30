@@ -308,10 +308,10 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                         await asyncio.sleep(0.5)
                     await btn.hover()
                     await asyncio.sleep(0.3)
-                    # 120 秒 download timeout (Gemini Pro 高解析度原圖伺服器
+                    # 240 秒 download timeout (Gemini Pro 高解析度原圖伺服器
                     # 偶爾需要 > 30 秒生成。openclaw 內建 image_generate 工具的
                     # 60 秒上限我們改用自製 skill 繞開,所以這裡可以給寬鬆時間)
-                    async with page.expect_download(timeout=120_000) as download_info:
+                    async with page.expect_download(timeout=240_000) as download_info:
                         await page.evaluate("btn => btn.click()", btn)
                     download = await download_info.value
                     logger.info("圖片 %d：下載事件觸發，等待檔案寫入...", i)
@@ -567,7 +567,7 @@ async def edit_image(
                         await asyncio.sleep(0.5)
                     await btn.hover()
                     await asyncio.sleep(0.3)
-                    async with page.expect_download(timeout=120_000) as download_info:
+                    async with page.expect_download(timeout=240_000) as download_info:
                         await page.evaluate("btn => btn.click()", btn)
                     download = await download_info.value
                     dl_path = await download.path()

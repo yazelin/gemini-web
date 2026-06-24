@@ -1,109 +1,55 @@
-"""去水印模組測試（Reverse Alpha Blending）"""
-import pytest
+"""去水印模組測試
+
+去水印演算法本身由 remove-ai-watermarks 套件負責（並有其自身測試），
+這裡只測「我們這層 wrapper」的合約：
+- 偵測不到浮水印的圖（乾淨圖）原檔不動
+- 讀不到 / 壞檔時 fallback 回原路徑、不丟例外
+- output_path 行為（預設覆蓋、指定則寫出）
+"""
 import numpy as np
 from pathlib import Path
-from PIL import Image, ImageDraw
-from src.watermark import remove_watermark, _detect_config, _load_alpha_map
+from PIL import Image
+
+from src.watermark import remove_watermark
 
 
-class TestDetectConfig:
-    def test_large_image(self):
-        """寬高都 > 1024 → 96x96"""
-        config = _detect_config(2816, 1536)
-        assert config["logo_size"] == 96
-        assert config["margin"] == 64
-
-    def test_small_image(self):
-        """寬或高 <= 1024 → 48x48"""
-        config = _detect_config(1024, 559)
-        assert config["logo_size"] == 48
-        assert config["margin"] == 32
-
-    def test_exact_boundary(self):
-        """1024x1024 邊界 → 48x48（不是 >）"""
-        config = _detect_config(1024, 1024)
-        assert config["logo_size"] == 48
+def _make_plain_image(tmp_path, w=1408, h=768, name="plain.png"):
+    """純漸層圖、無浮水印 → 偵測信心應低於門檻。"""
+    arr = np.zeros((h, w, 3), dtype=np.uint8)
+    arr[:, :, 0] = np.linspace(30, 200, w, dtype=np.uint8)[None, :]
+    arr[:, :, 1] = 80
+    arr[:, :, 2] = np.linspace(200, 30, h, dtype=np.uint8)[:, None]
+    path = str(tmp_path / name)
+    Image.fromarray(arr, "RGB").save(path)
+    return path
 
 
-class TestLoadAlphaMap:
-    def test_load_48(self):
-        alpha = _load_alpha_map(48)
-        assert alpha.shape == (48, 48)
-        assert alpha.max() <= 1.0
-        assert alpha.min() >= 0.0
-
-    def test_load_96(self):
-        alpha = _load_alpha_map(96)
-        assert alpha.shape == (96, 96)
-
-    def test_cache(self):
-        a1 = _load_alpha_map(48)
-        a2 = _load_alpha_map(48)
-        assert a1 is a2  # 同一個物件（快取）
-
-
-class TestRemoveWatermark:
-    def _make_image(self, tmp_path, w=2816, h=1536):
-        """建立測試圖片，右下角加白色模擬水印"""
-        img = Image.new("RGB", (w, h), (100, 80, 60))
-        draw = ImageDraw.Draw(img)
-        config = _detect_config(w, h)
-        x = w - config["margin"] - config["logo_size"]
-        y = h - config["margin"] - config["logo_size"]
-        # 畫白色方塊模擬水印
-        draw.rectangle([x, y, x + config["logo_size"], y + config["logo_size"]], fill=(240, 240, 240))
-        path = str(tmp_path / "test.png")
-        img.save(path)
-        return path
-
-    def test_removes_watermark(self, tmp_path):
-        """應成功處理並回傳輸出路徑"""
-        input_path = self._make_image(tmp_path)
-        output_path = str(tmp_path / "output.png")
-        result = remove_watermark(input_path, output_path)
-        assert result == output_path
-        assert Path(output_path).exists()
-
-    def test_default_overwrites(self, tmp_path):
-        """不指定 output 時覆蓋原檔"""
-        input_path = self._make_image(tmp_path)
+class TestNoWatermark:
+    def test_clean_image_returns_input_untouched(self, tmp_path):
+        """乾淨圖：回傳原路徑、且檔案位元組完全沒變（不亂刮）。"""
+        input_path = _make_plain_image(tmp_path)
+        before = Path(input_path).read_bytes()
         result = remove_watermark(input_path)
         assert result == input_path
+        assert Path(input_path).read_bytes() == before
 
-    def test_modifies_pixels(self, tmp_path):
-        """處理後右下角像素應該改變"""
-        input_path = self._make_image(tmp_path)
-        before = np.array(Image.open(input_path))
-
-        output_path = str(tmp_path / "output.png")
-        remove_watermark(input_path, output_path)
-        after = np.array(Image.open(output_path))
-
-        # 右下角區域應該不同
-        config = _detect_config(2816, 1536)
-        x = 2816 - config["margin"] - config["logo_size"]
-        y = 1536 - config["margin"] - config["logo_size"]
-        region_before = before[y:y+config["logo_size"], x:x+config["logo_size"]]
-        region_after = after[y:y+config["logo_size"], x:x+config["logo_size"]]
-        assert not np.array_equal(region_before, region_after)
-
-    def test_small_image(self, tmp_path):
-        """小圖也應該處理"""
-        input_path = self._make_image(tmp_path, 800, 600)
-        output_path = str(tmp_path / "small_output.png")
+    def test_clean_image_with_output_path(self, tmp_path):
+        """乾淨圖指定 output：偵測不到 → 回原路徑，不產生誤刮的輸出檔。"""
+        input_path = _make_plain_image(tmp_path)
+        output_path = str(tmp_path / "out.png")
         result = remove_watermark(input_path, output_path)
-        assert result == output_path
+        assert result == input_path
 
+
+class TestFallback:
     def test_nonexistent_file(self):
-        """不存在的檔案回傳原路徑"""
+        """不存在的檔案回傳原路徑、不丟例外。"""
         result = remove_watermark("/tmp/nonexistent_xyz.png")
         assert result == "/tmp/nonexistent_xyz.png"
 
-    def test_real_image(self):
-        """用真實 Gemini 圖片測試（如果存在）"""
-        real_path = "/home/ct/下載/Gemini_Generated_Image_wiho71wiho71wiho.png"
-        if not Path(real_path).exists():
-            pytest.skip("真實測試圖片不存在")
-        result = remove_watermark(real_path, "/tmp/test_real_clean.png")
-        assert result == "/tmp/test_real_clean.png"
-        assert Path(result).stat().st_size > 0
+    def test_corrupt_file(self, tmp_path):
+        """壞檔（非圖片）回傳原路徑、不丟例外。"""
+        bad = tmp_path / "bad.png"
+        bad.write_bytes(b"not an image")
+        result = remove_watermark(str(bad))
+        assert result == str(bad)

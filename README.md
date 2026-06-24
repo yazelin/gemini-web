@@ -4,7 +4,7 @@
 
 使用 Playwright 自動化 Gemini 網頁版，提供**圖片生成**和**文字對話**功能。支援 **CLI 工具**和 **HTTP API** 兩種使用方式。
 
-自動移除 Gemini 可見水印（Reverse Alpha Blending，基於 [gemini-watermark-remover](https://github.com/journey-ad/gemini-watermark-remover)）。
+自動移除 Gemini 可見水印（NCC 動態偵測 + 反 alpha，基於 [remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks)）。
 
 ## 安裝
 
@@ -176,20 +176,18 @@ sudo bash scripts/install-service.sh
 
 ## 去水印
 
-使用 **Reverse Alpha Blending** 演算法，數學精確還原被水印覆蓋的像素：
+使用維護中的 [remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks) 套件，
+以 **NCC（Normalized Cross-Correlation）動態偵測** 找出可見浮水印位置後再反 alpha 還原。
 
-```
-original = (watermarked - alpha × logo) / (1 - alpha)
-```
-
-- 純 Python 實作（Pillow + NumPy），跨平台
-- 大圖（寬高 > 1024）：96×96 水印，64px 邊距
-- 小圖：48×48 水印，32px 邊距
+- 動態偵測，不寫死位置/大小 —— 新版 Gemini（Gemini 3 / nano-banana-pro）各種長寬比都吃
+- 信心門檻 0.6：偵測不到浮水印的圖原檔不動，不會在無浮水印圖上誤刮
+- 純 CPU、離線、每張約 0.5 秒
 - API 模式自動去水印
 - CLI 模式加 `--no-watermark`
-- 不可見的 SynthID 浮水印無法移除
+- 不可見的 SynthID 浮水印無法移除（需 GPU + 擴散模型，本服務不處理）
 
-基於 [gemini-watermark-remover](https://github.com/journey-ad/gemini-watermark-remover) 和 [Python 版本](https://github.com/VimalMollyn/Gemini-Watermark-Remover-Python)。
+> 舊版用寫死右下角位置 + 固定 alpha map 的反 alpha；新版 Gemini 改了輸出比例後會去到錯位、
+> 留下痕跡，故改用動態偵測的套件。
 
 ## AI Agent 整合
 

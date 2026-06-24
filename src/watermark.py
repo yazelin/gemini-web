@@ -1,11 +1,12 @@
-"""去水印 — 移除 Gemini 可見浮水印（白/金色 sparkle）
+"""去水印 — 移除 Gemini 可見浮水印（白色 sparkle）
 
-改用維護中的 remove-ai-watermarks（NCC 動態偵測 + 反 alpha blending），
-取代舊版「寫死右下角位置 + 固定 alpha map」的做法。
+做法跟舊版一樣是 **reverse alpha blending**（數學還原、銳利、不模糊），
+差別只在「定位點」改成動態偵測：
 
-舊做法假設浮水印固定在右下角、大小依 _detect_config 的 48/96 二分，
-但新版 Gemini（Gemini 3 / nano-banana-pro）會輸出各種長寬比，浮水印位置與
-大小不再吻合那組常數，導致去到錯位、留下痕跡。NCC 動態偵測不挑尺寸/位置。
+- 舊版用 _detect_config 寫死右下角 48/96 logo + 32/64 邊距 → 新版 Gemini
+  (Gemini 3 / nano-banana-pro) 各種寬幅比例下浮水印不在那裡 → 去到錯位、留痕。
+- 新版用 remove-ai-watermarks 的 NCC 偵測拿到實際位置/大小，
+  還原仍走純反 alpha（remove_watermark_custom，不做 inpaint，所以不會糊）。
 
 對外介面維持不變：remove_watermark(input_path, output_path=None) -> str
 """
@@ -81,7 +82,8 @@ def remove_watermark(input_path: str, output_path: str | None = None) -> str:
             return input_path
 
         logger.info("去水印：conf=%.3f, region=%s", det.confidence, det.region)
-        result = engine.remove_watermark(img)
+        # 純反 alpha（remove_watermark_custom），不做 inpaint → 銳利、不模糊
+        result = engine.remove_watermark_custom(img, det.region)
         _imwrite(output_path, result)
         logger.info("去水印完成：%s", output_path)
         return output_path

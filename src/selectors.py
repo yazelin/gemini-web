@@ -1,7 +1,8 @@
 """Gemini 頁面 DOM selector 集中管理
 
 Gemini 改版時只需更新此檔案的 selector 值。
-最後校準日期：2026-04-27
+最後校準日期：2026-06-25（Gemini 把「工具」併進「上傳與工具」單一鈕，
+「建立圖片」改名「建立圖像」且為 menuitemcheckbox）
 """
 
 # API model name → Gemini 網頁版模式名稱
@@ -82,10 +83,21 @@ SELECTORS = {
     "upload_preview_blob": "img[src^='blob:']",
 
     # Tools 選單（圖片生成模式）
-    "tools_button": "button:has-text('Tools'), button:has-text('工具'), button:has(img[alt='page_info'])",
+    # 2026-06：Gemini 把「工具」併進「上傳與工具」單一 icon 鈕（innerText 空、
+    # 只有 aria-label），所以 :has-text 抓不到，必須用 aria-label。舊文字鈕保留當 fallback。
+    "tools_button": (
+        "button[aria-label='上傳與工具'], "
+        "button[aria-label='Upload files & more'], "
+        "button[aria-label='Upload & tools'], "
+        "button:has-text('Tools'), button:has-text('工具'), "
+        "button:has(img[alt='page_info'])"
+    ),
     # Scope 限制在 cdk-overlay 內，避免誤抓 composer 的「上傳圖片」按鈕
-    # 涵蓋「建立圖像」「建立圖片」兩種命名（Gemini 改版後文字會變動）
+    # 涵蓋「建立圖像」「建立圖片」兩種命名；2026-06 起該項是 menuitemcheckbox（非 button）
     "create_image": (
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('建立圖像'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('建立圖片'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('Create image'), "
         ".cdk-overlay-container button:has-text('建立圖像'), "
         ".cdk-overlay-container button:has-text('建立圖片'), "
         ".cdk-overlay-container button:has-text('生成圖像'), "

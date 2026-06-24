@@ -192,7 +192,12 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                 if create_img_btn:
                     # 縮短 click timeout，避免 selector 過時時卡 30 秒重試
                     await create_img_btn.click(timeout=5_000)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1)
+                    # 2026-06：「建立圖像」是 menuitemcheckbox，點完選單(overlay)不會
+                    # 自動關，會擋住輸入框。按 Esc 關掉 overlay；image 模式已開啟，
+                    # Esc 只關選單不會取消模式（已實機驗證）。
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(1)
                     logger.info("已切換至 Create image 模式")
                     switched_to_create_image = True
                     # 重新取得輸入框（模式切換後可能會刷新）

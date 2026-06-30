@@ -10,6 +10,33 @@ from .selectors import MODEL_MODE_MAP, SELECTORS
 
 logger = logging.getLogger(__name__)
 
+# 瀏覽器端 JS：把 <img> 畫進 canvas 轉 data URL。
+# 用於 blob: src（download 按鈕在 chat-edit 模式不觸發 download 事件時的後備）。
+# 同源 blob 不會污染 canvas，可直接 toDataURL。
+_CANVAS_EXTRACT_JS = """
+(img) => {
+  try {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (!w || !h) return null;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
+  } catch (e) { return null; }
+}
+"""
+
+# 瀏覽器端 JS：dump cdk-overlay 內的選單項目文字（debug 上傳/工具選單用）
+_DUMP_MENU_JS = """
+() => Array.from(document.querySelectorAll(
+    ".cdk-overlay-container [role='menuitem'], "
+    + ".cdk-overlay-container [role='menuitemcheckbox'], "
+    + ".cdk-overlay-container button"
+)).map(b => (b.innerText || b.getAttribute('aria-label') || '').trim().substring(0, 30))
+ .filter(Boolean)
+"""
+
 # 瀏覽器端 JS：取得圖片 src 資訊（用於 debug）
 _IMG_DEBUG_JS = """
 (img) => {
@@ -447,14 +474,26 @@ async def edit_image(
         switched_to_create_image = False  # 標記給後段 prompt 處理用
 
         # 2. 上傳 reference image
-        # 流程：點 upload button → 選單彈出 → 點「上傳檔案」menuitem → file chooser
-        # 兩段 click 都包在 expect_file_chooser 內，由 Playwright 攔截 file dialog
+        # 流程：點「上傳與工具」合併鈕 → 選單彈出 → 點「上傳檔案」menuitem → file chooser
+        # 2026-06：Gemini 把上傳併進「上傳與工具」單一鈕，舊的 upload_button
+        # (開啟上傳檔案選單) 已不存在。改點 tools_button（generate 路徑已驗證可開
+        # 同一個選單），失敗再退回舊 upload_button。兩段 click 都包在
+        # expect_file_chooser 內，由 Playwright 攔截 file dialog。
         logger.info("點擊上傳按鈕 + 選單，等 file chooser...")
         try:
             async with page.expect_file_chooser(timeout=15_000) as fc_info:
-                await page.click(SELECTORS["upload_button"])
+                try:
+                    await page.click(SELECTORS["tools_button"], timeout=8_000)
+                except Exception:
+                    await page.click(SELECTORS["upload_button"], timeout=5_000)
                 # 等選單 render（mat-menu Angular 動畫約 200ms）
                 await asyncio.sleep(0.8)
+                # debug：dump 選單項目，選擇器再過時時可從 log 直接定位
+                try:
+                    menu_items = await page.evaluate(_DUMP_MENU_JS)
+                    logger.info("上傳與工具選單: %s", json.dumps(menu_items, ensure_ascii=False)[:400])
+                except Exception:
+                    pass
                 await page.click(SELECTORS["upload_menu_item_local"])
             file_chooser = await fc_info.value
             await file_chooser.set_files(tmp_path)
@@ -572,7 +611,10 @@ async def edit_image(
                         await asyncio.sleep(0.5)
                     await btn.hover()
                     await asyncio.sleep(0.3)
-                    async with page.expect_download(timeout=240_000) as download_info:
+                    # chat-edit 模式下這顆下載鈕實測不觸發 download 事件，當作
+                    # 快速探測就好（拿全解析度原圖的機會），抓不到立刻退到
+                    # canvas/src 後備，避免空等拖長整體時間 + 撞 Cloudflare timeout。
+                    async with page.expect_download(timeout=12_000) as download_info:
                         await page.evaluate("btn => btn.click()", btn)
                     download = await download_info.value
                     dl_path = await download.path()
@@ -591,12 +633,10 @@ async def edit_image(
             for i, img_el in enumerate(img_els):
                 try:
                     src = await img_el.get_attribute("src")
-                    if not src:
-                        continue
-                    if src.startswith("data:image"):
+                    if src and src.startswith("data:image"):
                         # 排除 reference image 自己（雖然應該不在 generated-image 內）
                         images.append(src)
-                    elif src.startswith("http"):
+                    elif src and src.startswith("http"):
                         resp = await page.context.request.get(src)
                         if resp.ok:
                             body = await resp.body()
@@ -604,6 +644,14 @@ async def edit_image(
                             b64 = _b64x.b64encode(body).decode("ascii")
                             images.append(f"data:{content_type};base64,{b64}")
                             logger.info("編輯圖 %d 從 src 下載，%d bytes", i, len(body))
+                    else:
+                        # blob: 或無 src — 用 canvas 把渲染出的圖轉 data URL
+                        data_url = await img_el.evaluate(_CANVAS_EXTRACT_JS)
+                        if data_url:
+                            images.append(data_url)
+                            logger.info("編輯圖 %d 從 canvas 擷取，%d chars", i, len(data_url))
+                        else:
+                            logger.warning("編輯圖 %d canvas 擷取回傳空（src=%s）", i, str(src)[:40])
                 except Exception as e:
                     logger.warning("編輯圖 %d 擷取失敗：%s", i, e)
 

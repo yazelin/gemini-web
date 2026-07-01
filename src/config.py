@@ -58,6 +58,16 @@ class Settings:
         _keys = os.getenv("API_KEYS", "")
         self.api_keys: set[str] = {k.strip() for k in _keys.split(",") if k.strip()}
 
+        # 官方 Gemini Developer API fallback（付費、快、穩）。
+        # mode: "off" 不用 / "fallback" 瀏覽器失敗才頂上 / "primary" 直接用不跑瀏覽器
+        self.gemini_official_api_key: str = os.getenv("GEMINI_OFFICIAL_API_KEY", "")
+        self.gemini_official_model: str = os.getenv(
+            "GEMINI_OFFICIAL_MODEL", "gemini-3.1-flash-image-preview"
+        )
+        self.gemini_official_mode: str = os.getenv(
+            "GEMINI_OFFICIAL_MODE", "fallback"
+        ).strip().lower()
+
 
 settings = Settings()
 

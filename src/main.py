@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import settings
+from .official_api import official_generate
 from .openclaw_adapter import build_prompt, build_response_parts
 from .worker_pool import WorkerPool, QueueFullError
 
@@ -67,15 +68,70 @@ class EditRequest(BaseModel):
 # ── 端點 ──
 
 
+def _strip_data_url(s: str) -> tuple[str, str]:
+    """data:image/png;base64,xxx → (b64, mime);純 base64 → (s, image/png)。"""
+    if isinstance(s, str) and s.startswith("data:") and "," in s:
+        head, b64 = s.split(",", 1)
+        mime = head.split(":")[1].split(";")[0] if ":" in head else "image/png"
+        return b64, mime
+    return s, "image/png"
+
+
+def _has_valid_key(request: Request) -> bool:
+    """付費官方路只開放給帶正確 gemini-web key 的呼叫端（consumer worker 會帶
+    x-goog-api-key）。沒設 API_KEYS 時一律不開放付費路（保守，擋公網白嫖帳單）。"""
+    if not settings.api_keys:
+        return False
+    key = request.headers.get("x-goog-api-key") or request.query_params.get("key")
+    return bool(key and key in settings.api_keys)
+
+
+async def _maybe_official(prompt: str, request: Request, reference_image: str | None = None):
+    """試官方 Gemini API。回傳 {success, images, via} 或 None（未啟用/未授權/失敗）。
+    付費路 → 一定要帶有效 key，否則直接跳過（免費瀏覽器路照常開放）。"""
+    if not settings.gemini_official_api_key:
+        return None
+    if not _has_valid_key(request):
+        return None
+    img_b64, mime = (None, "image/png")
+    if reference_image:
+        img_b64, mime = _strip_data_url(reference_image)
+    try:
+        imgs = await official_generate(prompt, img_b64, mime)
+    except Exception as e:  # noqa: BLE001 — fallback 不該讓整個請求爆
+        logger.warning("官方 API fallback 失敗：%s", e)
+        return None
+    if imgs:
+        logger.info("官方 Gemini API 產出 %d 張圖", len(imgs))
+        return {"success": True, "images": imgs, "via": "official"}
+    return None
+
+
 @app.post("/api/generate")
-async def api_generate(req: GenerateRequest):
+async def api_generate(req: GenerateRequest, request: Request, official: int = Query(default=0)):
     """生成圖片"""
+    # primary 模式 or ?official=1 → 直接走官方 API，不跑瀏覽器
+    if official or settings.gemini_official_mode == "primary":
+        r = await _maybe_official(req.prompt, request)
+        if r:
+            return r
     try:
         result = await worker_pool.dispatch("generate", req.prompt, "", req.timeout)
     except QueueFullError:
+        r = await _maybe_official(req.prompt, request)
+        if r:
+            return r
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:
+        r = await _maybe_official(req.prompt, request)
+        if r:
+            return r
         raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+    # 瀏覽器回來但沒成功 → fallback 官方
+    if not result.get("success") and settings.gemini_official_mode == "fallback":
+        r = await _maybe_official(req.prompt, request)
+        if r:
+            return r
     return result
 
 
@@ -92,10 +148,15 @@ async def api_chat(req: ChatRequest):
 
 
 @app.post("/api/edit")
-async def api_edit(req: EditRequest):
+async def api_edit(req: EditRequest, request: Request, official: int = Query(default=0)):
     """以參考圖編輯模式生成圖片"""
     if not req.reference_image:
         raise HTTPException(status_code=400, detail="reference_image 不能為空")
+    # primary 模式 or ?official=1 → 直接走官方 API，不跑瀏覽器
+    if official or settings.gemini_official_mode == "primary":
+        r = await _maybe_official(req.prompt, request, req.reference_image)
+        if r:
+            return r
     try:
         result = await worker_pool.dispatch(
             "edit",
@@ -105,9 +166,20 @@ async def api_edit(req: EditRequest):
             extra={"reference_image": req.reference_image},
         )
     except QueueFullError:
+        r = await _maybe_official(req.prompt, request, req.reference_image)
+        if r:
+            return r
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:
+        r = await _maybe_official(req.prompt, request, req.reference_image)
+        if r:
+            return r
         raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+    # 瀏覽器回來但沒成功 → fallback 官方
+    if not result.get("success") and settings.gemini_official_mode == "fallback":
+        r = await _maybe_official(req.prompt, request, req.reference_image)
+        if r:
+            return r
     return result
 
 

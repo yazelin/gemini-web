@@ -110,6 +110,34 @@ curl -X POST http://localhost:8070/api/generate \
 }
 ```
 
+#### POST /api/edit（參考圖編輯 / image-to-image）
+
+帶一張參考圖 + prompt，回傳編輯後的圖。`reference_image` 接受 data URL 或純 base64。
+
+```bash
+curl -X POST http://localhost:8070/api/edit \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "redraw as a 3x3 sticker sheet", "reference_image": "data:image/png;base64,..."}'
+```
+
+回傳同 `/api/generate`：`{ "success": true, "images": ["data:image/png;base64,..."], ... }`。
+
+#### 官方 Gemini API fallback（付費、快、穩）
+
+瀏覽器路是免費但單線、較慢（~40s）且偶爾因 Gemini 改版而脆。可設定「瀏覽器失敗時
+自動頂替」的官方 Gemini Developer API（`generativelanguage`，~10s、按張計費）。適用於
+`/api/edit` 與 `/api/generate`。
+
+| 環境變數 | 說明 |
+|---|---|
+| `GEMINI_OFFICIAL_API_KEY` | AI Studio 的 Gemini API key（`?key=`）。**未設 = 完全不啟用付費路** |
+| `GEMINI_OFFICIAL_MODEL` | 影像模型 id，預設 `gemini-3.1-flash-image-preview` |
+| `GEMINI_OFFICIAL_MODE` | `off` / `fallback`（瀏覽器失敗才頂上，預設）/ `primary`（一律直接走官方、跳過瀏覽器） |
+
+- 加 `?official=1` query 可強制單次走官方路（測試 / 急用）。
+- **安全**：付費官方路**一律要求帶有效 `API_KEYS` 金鑰**（`x-goog-api-key`）。沒帶 key 的
+  呼叫端只會走免費瀏覽器路，**無法觸發付費 API** —— 防止公開端點被拿來燒你的帳單。
+
 #### POST /v1beta/models/{model}:generateContent（Google GenAI API 相容）
 
 完全相容 `google-genai` SDK 格式，可做為 Google Gemini API 的 drop-in replacement。
@@ -252,6 +280,9 @@ if data["success"]:
 | `DEFAULT_TIMEOUT` | 生圖超時秒數 | `180` |
 | `QUEUE_MAX_SIZE` | 最大排隊數 | `10` |
 | `API_KEYS` | API 金鑰（逗號分隔多組，空 = 不驗證） | 無 |
+| `GEMINI_OFFICIAL_API_KEY` | 官方 Gemini API key（付費 fallback；未設=不啟用） | 無 |
+| `GEMINI_OFFICIAL_MODEL` | 官方 fallback 影像模型 id | `gemini-3.1-flash-image-preview` |
+| `GEMINI_OFFICIAL_MODE` | `off` / `fallback` / `primary` | `fallback` |
 
 ## 從原始碼安裝
 

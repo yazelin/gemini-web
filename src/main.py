@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from . import history_db
+from .admin import router as admin_router
 from .config import settings
 from .official_api import official_generate
 from .openclaw_adapter import build_prompt, build_response_parts
@@ -30,6 +32,7 @@ _start_time = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """服務生命週期：啟動 worker pool，結束時清理"""
+    history_db.init_db()
     await worker_pool.start()
     logger.info("服務已啟動，%d 個 worker，port %d", settings.worker_count, settings.port)
     yield
@@ -37,6 +40,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Gemini Image API", lifespan=lifespan)
+app.include_router(admin_router)
+
+
+async def _dispatch_and_log(kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
+    """worker_pool.dispatch 包一層記到 admin history db（見 /admin/requests）。
+
+    只記瀏覽器路（worker_pool 這條）；?official=1 強制走官方 API、完全跳過
+    worker_pool 的那次成功不會出現在這裡——admin history 看的是 worker pool 流量。
+    """
+    start = time.time()
+    try:
+        result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra)
+    except Exception:
+        history_db.record(kind=kind, prompt=prompt, status="failed", duration_seconds=time.time() - start)
+        raise
+    history_db.record(
+        kind=kind,
+        prompt=prompt,
+        status="succeeded" if result.get("success") else "failed",
+        via=result.get("via", "browser"),
+        error="" if result.get("success") else str(result.get("message") or result.get("error") or ""),
+        duration_seconds=time.time() - start,
+    )
+    return result
 
 
 # ── Request / Response 模型 ──
@@ -116,7 +143,7 @@ async def api_generate(req: GenerateRequest, request: Request, official: int = Q
         if r:
             return r
     try:
-        result = await worker_pool.dispatch("generate", req.prompt, "", req.timeout)
+        result = await _dispatch_and_log("generate", req.prompt, "", req.timeout)
     except QueueFullError:
         r = await _maybe_official(req.prompt, request)
         if r:
@@ -139,7 +166,7 @@ async def api_generate(req: GenerateRequest, request: Request, official: int = Q
 async def api_chat(req: ChatRequest):
     """文字對話"""
     try:
-        result = await worker_pool.dispatch("chat", req.prompt, "", req.timeout)
+        result = await _dispatch_and_log("chat", req.prompt, "", req.timeout)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:
@@ -158,7 +185,7 @@ async def api_edit(req: EditRequest, request: Request, official: int = Query(def
         if r:
             return r
     try:
-        result = await worker_pool.dispatch(
+        result = await _dispatch_and_log(
             "edit",
             req.prompt,
             "",
@@ -314,7 +341,7 @@ async def _generate_content_impl(model: str, body: dict) -> dict:
     timeout = settings.default_timeout
 
     try:
-        result = await worker_pool.dispatch(kind, prompt, model, timeout)
+        result = await _dispatch_and_log(kind, prompt, model, timeout)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="Queue full")
     except asyncio.TimeoutError:

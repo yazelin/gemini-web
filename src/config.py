@@ -58,6 +58,17 @@ class Settings:
         _keys = os.getenv("API_KEYS", "")
         self.api_keys: set[str] = {k.strip() for k in _keys.split(",") if k.strip()}
 
+        # 資料目錄（admin history db 放這裡）
+        self.data_dir: str = _DEFAULT_DATA_DIR
+
+        # Admin webui（比照 codex-image-service 的登入+session 設計）
+        self.admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
+        self.admin_password: str = os.getenv("ADMIN_PASSWORD", "change-me")
+        self.admin_session_secret: str = os.getenv(
+            "ADMIN_SESSION_SECRET", "dev-only-session-secret"
+        )
+        self.admin_url_prefix: str = os.getenv("ADMIN_URL_PREFIX", "").rstrip("/")
+
         # 官方 Gemini Developer API fallback（付費、快、穩）。
         # mode: "off" 不用 / "fallback" 瀏覽器失敗才頂上 / "primary" 直接用不跑瀏覽器
         self.gemini_official_api_key: str = os.getenv("GEMINI_OFFICIAL_API_KEY", "")

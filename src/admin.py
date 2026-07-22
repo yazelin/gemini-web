@@ -3,7 +3,7 @@
 差異（因為 gemini-web 本身的資料模型比 codex-image-service 簡單）：
 - API Keys 頁是唯讀（金鑰是 .env 裡的靜態集合，不是資料庫動態發放），要換金鑰改 .env 重啟。
 - Test 頁直接同步呼叫 worker_pool.dispatch，圖片當場內嵌顯示（不落地存檔，本服務本來就不存生成的圖）。
-- History 頁記錄輕量 sqlite log（見 history_db.py），只留最近 500 筆，非完整稽核軌跡。
+- History 頁記錄輕量 sqlite log（見 admin_db.py），只留最近 500 筆，非完整稽核軌跡。
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import history_db
+from . import admin_db
 from .config import settings
 from .security import constant_equals, create_admin_session, verify_admin_session
 
@@ -91,12 +91,24 @@ async def login(request: Request):
     ttl_seconds = 30 * 86400 if remember else 86400
 
     response = RedirectResponse(_url(request, "/admin"), status_code=303)
+    # Any session cookie set before the Path scoping fix landed defaulted to
+    # Path=/ (root) — it still lives in returning browsers and coexists with
+    # the new Path-scoped one (different Path = different cookie in the jar),
+    # so the browser sends both and whichever one the server happens to read
+    # can be the stale/wrong one. Clear the old root-path cookie explicitly
+    # so only the correctly-scoped one survives.
+    response.delete_cookie("admin_session", path="/")
     response.set_cookie(
         "admin_session",
         create_admin_session(username, settings.admin_session_secret, ttl_seconds=ttl_seconds),
         httponly=True,
         samesite="lax",
         max_age=ttl_seconds,
+        # Without an explicit path, Starlette defaults to "/" — behind the
+        # shared ching-tech.ddns.net domain that collides with any other
+        # admin webui on the same host (e.g. codex-image-service's), since
+        # both use the same cookie name. Scope it to this service's own prefix.
+        path=_prefix(request) or "/",
     )
     return response
 
@@ -104,7 +116,7 @@ async def login(request: Request):
 @router.post("/admin/logout", include_in_schema=False)
 async def logout(request: Request) -> RedirectResponse:
     response = RedirectResponse(_url(request, "/admin/login"), status_code=303)
-    response.delete_cookie("admin_session")
+    response.delete_cookie("admin_session", path=_prefix(request) or "/")
     return response
 
 
@@ -123,7 +135,14 @@ async def overview(request: Request):
 async def keys_page(request: Request):
     if not _admin_user(request):
         return _redirect_login(request)
-    return HTMLResponse(_keys_page(_prefix(request)))
+    # One-shot reveal: read+immediately clear the flash cookie the create-key
+    # POST set, so a page refresh never shows the raw key a second time.
+    new_key = request.cookies.get("_new_api_key")
+    body = _keys_page(_prefix(request), new_api_key=new_key)
+    response = HTMLResponse(body)
+    if new_key:
+        response.delete_cookie("_new_api_key", path=_url(request, "/admin/keys"))
+    return response
 
 
 @router.get("/admin/test", response_class=HTMLResponse, include_in_schema=False)
@@ -188,6 +207,43 @@ async def admin_test_generate(request: Request):
     )
 
 
+@router.post("/admin/api-keys", include_in_schema=False)
+async def create_api_key(request: Request):
+    if not _admin_user(request):
+        return _redirect_login(request)
+    form = await request.form()
+    name = str(form.get("name", ""))
+    _, raw_key = admin_db.create_api_key(name)
+    # PRG: stash the raw key in a short-lived flash cookie, then redirect.
+    # The GET handler reads it once and immediately clears the cookie.
+    response = RedirectResponse(_url(request, "/admin/keys"), status_code=303)
+    response.set_cookie(
+        "_new_api_key",
+        raw_key,
+        httponly=True,
+        samesite="lax",
+        max_age=60,
+        path=_url(request, "/admin/keys"),
+    )
+    return response
+
+
+@router.post("/admin/api-keys/{key_id}/disable", include_in_schema=False)
+async def disable_api_key(request: Request, key_id: str) -> RedirectResponse:
+    if not _admin_user(request):
+        return _redirect_login(request)
+    admin_db.disable_api_key(key_id)
+    return RedirectResponse(_url(request, "/admin/keys"), status_code=303)
+
+
+@router.post("/admin/api-keys/{key_id}/delete", include_in_schema=False)
+async def delete_api_key(request: Request, key_id: str) -> RedirectResponse:
+    if not _admin_user(request):
+        return _redirect_login(request)
+    admin_db.delete_api_key(key_id)
+    return RedirectResponse(_url(request, "/admin/keys"), status_code=303)
+
+
 # ---------------------------------------------------------------------------
 # page renderers
 # ---------------------------------------------------------------------------
@@ -196,8 +252,8 @@ async def _overview_page(request: Request) -> str:
     from . import main as _main  # deferred: avoids circular import (see top of file)
 
     prefix = _prefix(request)
-    stats = history_db.stats()
-    recent = history_db.list_recent(10)
+    stats = admin_db.stats()
+    recent = admin_db.list_recent(10)
     worker_statuses = await _main.worker_pool.worker_status()
     uptime = round(time.time() - _main._start_time)
     body = f"""
@@ -226,15 +282,52 @@ async def _overview_page(request: Request) -> str:
     return _shell("Overview", "overview", prefix, body)
 
 
-def _keys_page(prefix: str) -> str:
-    keys = sorted(settings.api_keys)
+def _keys_page(prefix: str, new_api_key: str | None = None) -> str:
+    keys = admin_db.list_api_keys()
+    notice = ""
+    if new_api_key:
+        notice = (
+            "<div class='notice notice-prominent'>"
+            "<strong>New API key created.</strong> Copy it now — refresh or "
+            "leave this page and the raw value is gone forever "
+            "(only the sha256 hash stays on the server)."
+            "<div class='key-reveal-row'>"
+            f"<code class='key-reveal' id='new-key-value'>{html.escape(new_api_key)}</code>"
+            "<button class='copy-btn' type='button' data-copy-target='new-key-value'>Copy</button>"
+            "</div>"
+            "</div>"
+        )
+    static_keys = sorted(settings.api_keys)
     body = f"""
       <div class="page-head">
         <h2>API Keys</h2>
-        <p class="page-sub">Static keys from the <code>API_KEYS</code> env var — read-only here. Edit <code>.env</code> and restart the service to add, remove, or rotate a key.</p>
+        <p class="page-sub">Issue bearer keys for each caller. The raw <code>gmw_&lt;random-token&gt;</code> value is only shown once at creation; the server stores a sha256 hash.</p>
       </div>
+      {notice}
       <section>
-        {_keys_table(keys)}
+        <h2>Create a new key</h2>
+        <form class="inline" method="post" action="{prefix}/admin/api-keys">
+          <input name="name" placeholder="Caller / project name (e.g. line-sticker-studio)" required>
+          <button type="submit">Create key</button>
+        </form>
+      </section>
+      <section>
+        <div class="section-title">
+          <h2>Issued keys</h2>
+        </div>
+        <p class="muted" style="margin: -4px 0 14px; font-size: 13px;">
+          <strong>Heads up:</strong> the <em>Handle</em> column below is the admin reference
+          ID (<code>key_&lt;last-12-chars&gt;</code>), <strong>not</strong> the bearer key.
+          Callers must use the original <code>gmw_&lt;random-token&gt;</code> from creation time.
+        </p>
+        {_keys_table(keys, prefix)}
+      </section>
+      <section>
+        <h2>Static keys ({len(static_keys)})</h2>
+        <p class="muted" style="margin: -4px 0 14px; font-size: 13px;">
+          From the <code>API_KEYS</code> env var — still valid, but read-only here. Edit <code>.env</code> and restart the service to add, remove, or rotate one.
+        </p>
+        {_static_keys_table(static_keys)}
       </section>
     """
     return _shell("API Keys", "keys", prefix, body)
@@ -281,7 +374,7 @@ def _test_page(
 
 
 def _requests_page(prefix: str) -> str:
-    requests = history_db.list_recent(200)
+    requests = admin_db.list_recent(200)
     body = f"""
       <div class="page-head">
         <h2>History</h2>
@@ -366,16 +459,57 @@ def _activity_feed(requests: list[dict[str, Any]], prefix: str) -> str:
     return "<ul class='activity'>" + "".join(items) + "</ul>"
 
 
-def _keys_table(keys: list[str]) -> str:
+def _keys_table(keys: list[dict[str, Any]], prefix: str) -> str:
+    rows = []
+    for key in keys:
+        enabled = (
+            "<span class='chip chip-ok'>enabled</span>"
+            if key["enabled"]
+            else "<span class='chip chip-mute'>disabled</span>"
+        )
+        action_forms = []
+        if key["enabled"]:
+            action_forms.append(
+                f"<form method='post' action='{prefix}/admin/api-keys/{html.escape(key['id'])}/disable' style='display:inline'>"
+                "<button class='ghost' type='submit'>Disable</button></form>"
+            )
+        action_forms.append(
+            f"<form method='post' action='{prefix}/admin/api-keys/{html.escape(key['id'])}/delete' style='display:inline;margin-left:6px'"
+            " onsubmit=\"return confirm('Delete this API key permanently?');\">"
+            "<button class='danger' type='submit'>Delete</button></form>"
+        )
+        action = "".join(action_forms)
+        rows.append(
+            "<tr>"
+            f"<td><code class='handle'>{html.escape(key['id'])}</code></td>"
+            f"<td><strong class='key-name'>{html.escape(key['name'])}</strong></td>"
+            f"<td>{enabled}</td>"
+            f"<td>{html.escape(str(key['requests_count']))}</td>"
+            f"<td>{_relative_time(key['last_used_at']) or '—'}</td>"
+            f"<td class='actions'>{action}</td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append(
+            "<tr><td colspan='6' class='empty'>No issued keys yet. Use the form above to create one.</td></tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th title='Admin reference ID — not the bearer key.'>Handle</th>"
+        "<th>Name</th><th>Status</th><th>Requests</th>"
+        "<th>Last used</th><th>Action</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
+def _static_keys_table(keys: list[str]) -> str:
     rows = []
     for key in keys:
         masked = key[:4] + "…" + key[-4:] if len(key) > 8 else "…"
         rows.append(f"<tr><td><code>{html.escape(masked)}</code></td></tr>")
     if not rows:
-        rows.append(
-            "<tr><td class='empty'>No keys configured — API_KEYS is empty, "
-            "so the official-API fallback and Google GenAI compat endpoints are unauthenticated.</td></tr>"
-        )
+        rows.append("<tr><td class='empty'>None configured.</td></tr>")
     return f"<table><thead><tr><th>Key (masked)</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
@@ -493,9 +627,47 @@ def _base_layout(title: str, body: str) -> str:
       <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23a5b4fc'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-size='34' fill='white' font-family='ui-sans-serif,system-ui'%3E%E2%9C%A7%3C/text%3E%3C/svg%3E">
       <style>{_STYLES}</style>
     </head>
-    <body>{body}</body>
+    <body>{body}
+      <script>{_COPY_SCRIPT}</script>
+    </body>
     </html>
     """
+
+
+_COPY_SCRIPT = """
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.copy-btn');
+  if (!btn) return;
+  let value = btn.getAttribute('data-copy-value');
+  if (!value) {
+    const targetId = btn.getAttribute('data-copy-target');
+    if (targetId) {
+      const el = document.getElementById(targetId);
+      if (el) value = el.textContent.trim();
+    }
+  }
+  if (!value) return;
+  const done = () => {
+    const original = btn.textContent;
+    btn.textContent = 'Copied ✓';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1400);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(value).then(done).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = value; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } finally { document.body.removeChild(ta); }
+    });
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = value; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } finally { document.body.removeChild(ta); }
+  }
+});
+"""
 
 
 _STYLES = """
@@ -679,6 +851,8 @@ _STYLES = """
     border: 1px solid var(--card-edge); box-shadow: none;
   }
   button.ghost:hover { background: #f5f6ff; }
+  button.danger { background: var(--danger); }
+  button.danger:hover { filter: brightness(1.08); }
 
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th, td {
@@ -694,7 +868,10 @@ _STYLES = """
   }
   tr:last-child td { border-bottom: 0; }
   tbody tr:hover { background: #f8f9ff; }
+  td.actions { white-space: nowrap; }
   td.empty { text-align: center; color: var(--muted); padding: 32px 12px; }
+  code.handle { background: transparent; color: var(--muted); padding: 0; font-size: 11.5px; }
+  .key-name { color: var(--ink); font-weight: 600; font-size: 14px; }
 
   .chip {
     display: inline-block;

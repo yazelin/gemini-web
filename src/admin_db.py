@@ -1,4 +1,9 @@
-"""Admin History 頁用的請求記錄（輕量版，不存圖片本體——圖只回給呼叫端）"""
+"""Admin webui 的 sqlite 儲存：請求記錄（輕量版，不存圖片本體）+ 動態發放的 API keys。
+
+靜態的 .env API_KEYS 集合仍然有效（見 config.py／main.py 的 _is_valid_api_key）—
+這裡的 api_keys 表是疊加上去的第二個來源，讓 admin webui 能像 codex-image-service
+一樣現場發新 key，不用改 .env 重啟。
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -8,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import settings
+from .security import generate_api_key, hash_api_key
 
 _DB_PATH = Path(settings.data_dir) / "admin.db"
 
@@ -35,6 +41,19 @@ def _connect() -> sqlite3.Connection:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            requests_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
     )
     return conn
 
@@ -82,6 +101,60 @@ def list_recent(limit: int = 100) -> list[dict[str, Any]]:
             "SELECT * FROM requests ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# ── dynamically-issued API keys ──
+
+
+def create_api_key(name: str) -> tuple[dict[str, Any], str]:
+    """Returns (row, raw_key). The raw key is only ever available here —
+    only its sha256 hash is stored."""
+    raw_key = generate_api_key()
+    key_id = f"key_{raw_key[-12:]}"
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (id, name, key_hash, enabled, created_at) VALUES (?, ?, ?, 1, ?)",
+            (key_id, name.strip() or "Unnamed key", hash_api_key(raw_key), datetime.now(timezone.utc).isoformat()),
+        )
+        row = conn.execute("SELECT * FROM api_keys WHERE id = ?", (key_id,)).fetchone()
+    return dict(row), raw_key
+
+
+def list_api_keys() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_api_key_by_token(token: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM api_keys WHERE key_hash = ?", (hash_api_key(token),)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_api_key_used(key_id: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = ?, requests_count = requests_count + 1 WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), key_id),
+        )
+
+
+def disable_api_key(key_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE api_keys SET enabled = 0 WHERE id = ?", (key_id,))
+
+
+def delete_api_key(key_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+
+
+def has_any_dynamic_key() -> bool:
+    with _connect() as conn:
+        return conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone() is not None
 
 
 def stats() -> dict[str, int]:

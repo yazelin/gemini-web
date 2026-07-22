@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import history_db
+from . import admin_db
 from .admin import router as admin_router
 from .config import settings
 from .official_api import official_generate
@@ -32,7 +32,7 @@ _start_time = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """服務生命週期：啟動 worker pool，結束時清理"""
-    history_db.init_db()
+    admin_db.init_db()
     await worker_pool.start()
     logger.info("服務已啟動，%d 個 worker，port %d", settings.worker_count, settings.port)
     yield
@@ -53,9 +53,9 @@ async def _dispatch_and_log(kind: str, prompt: str, model: str, timeout: int, ex
     try:
         result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra)
     except Exception:
-        history_db.record(kind=kind, prompt=prompt, status="failed", duration_seconds=time.time() - start)
+        admin_db.record(kind=kind, prompt=prompt, status="failed", duration_seconds=time.time() - start)
         raise
-    history_db.record(
+    admin_db.record(
         kind=kind,
         prompt=prompt,
         status="succeeded" if result.get("success") else "failed",
@@ -104,13 +104,26 @@ def _strip_data_url(s: str) -> tuple[str, str]:
     return s, "image/png"
 
 
+def _is_valid_api_key(candidate: str | None) -> bool:
+    """兩個金鑰來源都認：.env 的 API_KEYS 靜態集合（沿用舊行為），加上
+    admin webui 現場發放、存在 admin_db 的動態 key（sha256 雜湊比對）。
+    沒帶 key 或兩邊都沒有 → 一律不算有效（無金鑰時預設關閉）。"""
+    if not candidate:
+        return False
+    if candidate in settings.api_keys:
+        return True
+    row = admin_db.get_api_key_by_token(candidate)
+    if row and row["enabled"]:
+        admin_db.mark_api_key_used(row["id"])
+        return True
+    return False
+
+
 def _has_valid_key(request: Request) -> bool:
     """付費官方路只開放給帶正確 gemini-web key 的呼叫端（consumer worker 會帶
-    x-goog-api-key）。沒設 API_KEYS 時一律不開放付費路（保守，擋公網白嫖帳單）。"""
-    if not settings.api_keys:
-        return False
+    x-goog-api-key）。"""
     key = request.headers.get("x-goog-api-key") or request.query_params.get("key")
-    return bool(key and key in settings.api_keys)
+    return _is_valid_api_key(key)
 
 
 async def _maybe_official(prompt: str, request: Request, reference_image: str | None = None):
@@ -259,12 +272,14 @@ def _extract_api_key(request: Request, key: str | None) -> str | None:
 
 
 def _verify_api_key(request: Request, key: str | None):
-    """驗證 API 金鑰（如果有設定 API_KEYS）"""
-    if not settings.api_keys:
-        return
+    """驗證 API 金鑰。完全沒設過任何金鑰（.env 跟 admin webui 都沒有）時維持
+    原本的開放行為（開發/預設情境）；只要設過一把，就一定要帶對的 key。"""
     actual_key = _extract_api_key(request, key)
-    if not actual_key or actual_key not in settings.api_keys:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+    if _is_valid_api_key(actual_key):
+        return
+    if not settings.api_keys and not admin_db.has_any_dynamic_key():
+        return
+    raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 async def _generate_content_impl(model: str, body: dict) -> dict:

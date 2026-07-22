@@ -1,12 +1,21 @@
-"""Admin session 簽章（沿用 codex-image-service 同款 HMAC 簽章格式）"""
+"""Admin session 簽章 + API key 產生/雜湊（沿用 codex-image-service 同款做法）"""
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 from typing import Any
+
+
+def generate_api_key() -> str:
+    return f"gmw_{secrets.token_urlsafe(32)}"
+
+
+def hash_api_key(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
 
 def constant_equals(left: str, right: str) -> bool:

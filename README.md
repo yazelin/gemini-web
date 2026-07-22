@@ -283,6 +283,16 @@ if data["success"]:
 | `GEMINI_OFFICIAL_API_KEY` | 官方 Gemini API key（付費 fallback；未設=不啟用） | 無 |
 | `GEMINI_OFFICIAL_MODEL` | 官方 fallback 影像模型 id | `gemini-3.1-flash-image-preview` |
 | `GEMINI_OFFICIAL_MODE` | `off` / `fallback` / `primary` | `fallback` |
+| `ADMIN_USERNAME` | Admin webui 登入帳號 | `admin` |
+| `ADMIN_PASSWORD` | Admin webui 登入密碼 | `change-me`（**上線前務必改**） |
+| `ADMIN_SESSION_SECRET` | Admin session cookie 簽章密鑰 | `dev-only-session-secret`（**上線前務必改**） |
+| `ADMIN_URL_PREFIX` | Admin webui 反代路徑前綴（如 `/gemini-web`） | 空 |
+| `GENERATED_DIR` | Admin History 頁落地圖片的目錄（API 回應仍是 base64，不受影響） | `~/.gemini-web/generated` |
+| `IMAGE_RETENTION_DAYS` | 落地圖片保留天數，超過的下次生圖時順便清 | `7` |
+
+## Admin webui
+
+`/admin`（比照 [codex-image-service](https://github.com/yazelin/codex-image-service) 同一套操作習慣）：登入（含 remember-me）、Overview（worker 健康度/近期活動）、API Keys（現場發放/停用/刪除動態 key，`.env` 的 `API_KEYS` 仍有效、唯讀顯示）、Test（手動測 generate/edit/chat，含參考圖上傳）、History（近 500 筆請求，含哪把 key、哪個 worker、輸出圖連結）。
 
 ## 從原始碼安裝
 

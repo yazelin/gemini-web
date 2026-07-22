@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -42,6 +43,17 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC)"
     )
+    # Columns added after the table already existed in production — plain
+    # CREATE TABLE IF NOT EXISTS above won't retrofit a live db, so add them
+    # by hand if missing.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(requests)").fetchall()}
+    for col, ddl in (
+        ("image_paths", "ALTER TABLE requests ADD COLUMN image_paths TEXT NOT NULL DEFAULT '[]'"),
+        ("api_key_name", "ALTER TABLE requests ADD COLUMN api_key_name TEXT"),
+        ("worker_id", "ALTER TABLE requests ADD COLUMN worker_id INTEGER"),
+    ):
+        if col not in existing_cols:
+            conn.execute(ddl)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS api_keys (
@@ -70,15 +82,21 @@ def record(
     via: str = "",
     error: str = "",
     duration_seconds: float = 0.0,
-) -> None:
+    image_paths: list[str] | None = None,
+    api_key_name: str = "",
+    worker_id: int | None = None,
+) -> str:
+    request_id = uuid.uuid4().hex[:12]
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO requests (id, kind, prompt, status, via, error, duration_seconds, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO requests
+                (id, kind, prompt, status, via, error, duration_seconds, created_at,
+                 image_paths, api_key_name, worker_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                uuid.uuid4().hex[:12],
+                request_id,
                 kind,
                 prompt,
                 status,
@@ -86,6 +104,9 @@ def record(
                 error,
                 duration_seconds,
                 datetime.now(timezone.utc).isoformat(),
+                json.dumps(image_paths or []),
+                api_key_name,
+                worker_id,
             ),
         )
         # keep the table from growing forever — this is an admin log, not an audit trail
@@ -93,6 +114,16 @@ def record(
             "DELETE FROM requests WHERE id NOT IN "
             "(SELECT id FROM requests ORDER BY created_at DESC LIMIT 500)"
         )
+    return request_id
+
+
+def _decode(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    try:
+        item["image_paths"] = json.loads(item.get("image_paths") or "[]")
+    except json.JSONDecodeError:
+        item["image_paths"] = []
+    return item
 
 
 def list_recent(limit: int = 100) -> list[dict[str, Any]]:
@@ -100,7 +131,18 @@ def list_recent(limit: int = 100) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM requests ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [_decode(row) for row in rows]
+
+
+def get_request(request_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM requests WHERE id = ?", (request_id,)).fetchone()
+    return _decode(row) if row else None
+
+
+def delete_request(request_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM requests WHERE id = ?", (request_id,))
 
 
 # ── dynamically-issued API keys ──

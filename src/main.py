@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import admin_db
+from . import admin_db, image_store
 from .admin import router as admin_router
 from .config import settings
 from .official_api import official_generate
@@ -41,20 +42,70 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gemini Image API", lifespan=lifespan)
 app.include_router(admin_router)
+app.mount(
+    "/generated",
+    StaticFiles(directory=settings.generated_dir, check_dir=False),
+    name="generated",
+)
 
 
-async def _dispatch_and_log(kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
+def _identify_caller(request: Request | None) -> str:
+    """Resolve the caller's x-goog-api-key/`key` query param to a display
+    name for admin History — "static" for a .env key, the issued name for
+    an admin-issued dynamic key, "" if no key was presented at all.
+
+    This is the one choke point all traffic funnels through (gated or not —
+    /api/generate|chat|edit don't require a key), so it's also where a
+    dynamic key's usage stats get bumped; without this, calls through those
+    endpoints would never show up in the Keys page's request counts.
+    """
+    if request is None:
+        return ""
+    candidate = request.headers.get("x-goog-api-key") or request.query_params.get("key")
+    if not candidate:
+        return ""
+    if candidate in settings.api_keys:
+        return "static"
+    row = admin_db.get_api_key_by_token(candidate)
+    if row:
+        admin_db.mark_api_key_used(row["id"])
+        return row["name"]
+    return "unknown key"
+
+
+async def _dispatch_and_log(
+    kind: str,
+    prompt: str,
+    model: str,
+    timeout: int,
+    extra: dict | None = None,
+    request: Request | None = None,
+    api_key_name: str | None = None,
+) -> dict:
     """worker_pool.dispatch 包一層記到 admin history db（見 /admin/requests）。
 
     只記瀏覽器路（worker_pool 這條）；?official=1 強制走官方 API、完全跳過
     worker_pool 的那次成功不會出現在這裡——admin history 看的是 worker pool 流量。
+
+    api_key_name 給呼叫端明確指定時（例如 admin Test 頁挑一把 key 來模擬）優先用它；
+    否則從 request 的 header/query 反解——見 _identify_caller。
     """
     start = time.time()
+    resolved_key_name = api_key_name if api_key_name is not None else _identify_caller(request)
     try:
         result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra)
     except Exception:
-        admin_db.record(kind=kind, prompt=prompt, status="failed", duration_seconds=time.time() - start)
+        admin_db.record(
+            kind=kind, prompt=prompt, status="failed",
+            duration_seconds=time.time() - start, api_key_name=resolved_key_name,
+        )
         raise
+
+    image_paths: list[str] = []
+    if result.get("success") and result.get("images"):
+        image_paths = image_store.save_images(result["images"])
+        image_store.sweep_old(settings.image_retention_days)
+
     admin_db.record(
         kind=kind,
         prompt=prompt,
@@ -62,6 +113,9 @@ async def _dispatch_and_log(kind: str, prompt: str, model: str, timeout: int, ex
         via=result.get("via", "browser"),
         error="" if result.get("success") else str(result.get("message") or result.get("error") or ""),
         duration_seconds=time.time() - start,
+        image_paths=image_paths,
+        api_key_name=resolved_key_name,
+        worker_id=result.get("worker_id"),
     )
     return result
 
@@ -156,7 +210,7 @@ async def api_generate(req: GenerateRequest, request: Request, official: int = Q
         if r:
             return r
     try:
-        result = await _dispatch_and_log("generate", req.prompt, "", req.timeout)
+        result = await _dispatch_and_log("generate", req.prompt, "", req.timeout, request=request)
     except QueueFullError:
         r = await _maybe_official(req.prompt, request)
         if r:
@@ -176,10 +230,10 @@ async def api_generate(req: GenerateRequest, request: Request, official: int = Q
 
 
 @app.post("/api/chat")
-async def api_chat(req: ChatRequest):
+async def api_chat(req: ChatRequest, request: Request):
     """文字對話"""
     try:
-        result = await _dispatch_and_log("chat", req.prompt, "", req.timeout)
+        result = await _dispatch_and_log("chat", req.prompt, "", req.timeout, request=request)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:
@@ -204,6 +258,7 @@ async def api_edit(req: EditRequest, request: Request, official: int = Query(def
             "",
             req.timeout,
             extra={"reference_image": req.reference_image},
+            request=request,
         )
     except QueueFullError:
         r = await _maybe_official(req.prompt, request, req.reference_image)
@@ -282,7 +337,7 @@ def _verify_api_key(request: Request, key: str | None):
     raise HTTPException(status_code=403, detail="Invalid API key")
 
 
-async def _generate_content_impl(model: str, body: dict) -> dict:
+async def _generate_content_impl(model: str, body: dict, request: Request | None = None) -> dict:
     """Google GenAI API 相容端點的核心邏輯,可被 streaming / non-streaming 共用。"""
 
     # 前置驗證: dump 完整 body 結構 (隱藏 base64 內容避免 log 爆炸)
@@ -356,7 +411,7 @@ async def _generate_content_impl(model: str, body: dict) -> dict:
     timeout = settings.default_timeout
 
     try:
-        result = await _dispatch_and_log(kind, prompt, model, timeout)
+        result = await _dispatch_and_log(kind, prompt, model, timeout, request=request)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="Queue full")
     except asyncio.TimeoutError:
@@ -425,7 +480,7 @@ async def genai_generate_content(model: str, request: Request, key: str = Query(
     """Google GenAI API 相容端點 (非串流)"""
     _verify_api_key(request, key)
     body = await request.json()
-    return await _generate_content_impl(model, body)
+    return await _generate_content_impl(model, body, request=request)
 
 
 @app.post("/v1beta/models/{model}:streamGenerateContent")
@@ -453,7 +508,7 @@ async def genai_stream_generate_content(
         yield ": stream-open\n\n"
 
         # 2. 在背景跑核心邏輯
-        task = asyncio.create_task(_generate_content_impl(model, body))
+        task = asyncio.create_task(_generate_content_impl(model, body, request=request))
 
         # 3. 每 15 秒一個 SSE comment 心跳;SSE 規格中以 ":" 開頭的行是 comment,
         #    client 端會忽略內容但 TCP 層收到資料就會 reset idle timer

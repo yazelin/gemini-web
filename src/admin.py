@@ -1,21 +1,26 @@
 """Admin webui — 比照 codex-image-service 的頁面結構與登入方式，同一套操作習慣。
 
-差異（因為 gemini-web 本身的資料模型比 codex-image-service 簡單）：
-- API Keys 頁是唯讀（金鑰是 .env 裡的靜態集合，不是資料庫動態發放），要換金鑰改 .env 重啟。
-- Test 頁直接同步呼叫 worker_pool.dispatch，圖片當場內嵌顯示（不落地存檔，本服務本來就不存生成的圖）。
-- History 頁記錄輕量 sqlite log（見 admin_db.py），只留最近 500 筆，非完整稽核軌跡。
+- API Keys 頁可以現場發新 key/停用/刪除（admin_db 的 api_keys 表），.env 的
+  API_KEYS 靜態集合仍然有效，顯示在頁面下半當唯讀區塊。
+- Test 頁直接同步呼叫 worker_pool.dispatch，支援 generate/edit/chat 三種
+  kind（edit 要另外上傳一張參考圖），圖片當場內嵌顯示，也跟真實流量一樣落地
+  存檔、寫進 History。
+- History 頁記錄輕量 sqlite log（見 admin_db.py），只留最近 500 筆，非完整稽核
+  軌跡；每筆記錄的圖片存在 GENERATED_DIR，靠 image_store.sweep_old 定期清。
 """
 from __future__ import annotations
 
+import base64
 import html
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import admin_db
+from . import admin_db, image_store
 from .config import settings
 from .security import constant_equals, create_admin_session, verify_admin_session
 
@@ -159,6 +164,25 @@ async def requests_page(request: Request):
     return HTMLResponse(_requests_page(_prefix(request)))
 
 
+@router.post("/admin/cleanup", response_class=HTMLResponse, include_in_schema=False)
+async def cleanup(request: Request):
+    if not _admin_user(request):
+        return _redirect_login(request)
+    deleted = image_store.sweep_old(settings.image_retention_days)
+    return HTMLResponse(_requests_page(_prefix(request), cleanup_result=deleted))
+
+
+@router.post("/admin/requests/{request_id}/delete", include_in_schema=False)
+async def delete_request(request: Request, request_id: str) -> RedirectResponse:
+    if not _admin_user(request):
+        return _redirect_login(request)
+    row = admin_db.get_request(request_id)
+    if row:
+        image_store.delete_files(row.get("image_paths") or [])
+        admin_db.delete_request(request_id)
+    return RedirectResponse(_url(request, "/admin/requests"), status_code=303)
+
+
 # ---------------------------------------------------------------------------
 # mutation routes (POST)
 # ---------------------------------------------------------------------------
@@ -172,22 +196,51 @@ async def admin_test_generate(request: Request):
     form = await request.form()
     kind = str(form.get("kind", "generate")).strip() or "generate"
     prompt = str(form.get("prompt", "")).strip()
+    api_key_choice = str(form.get("api_key_choice", "")).strip()
     try:
         timeout = int(str(form.get("timeout", str(settings.default_timeout))).strip())
     except ValueError:
         timeout = settings.default_timeout
 
+    # Resolve the "attribute to" choice into the api_key_name that gets
+    # written to History — mirrors what _identify_caller would do for a real
+    # request, but picked explicitly instead of parsed off headers, and
+    # bumps that key's usage stats same as a real call would.
+    api_key_name = ""
+    if api_key_choice == "static":
+        api_key_name = "static"
+    elif api_key_choice:
+        row = next((k for k in admin_db.list_api_keys() if k["id"] == api_key_choice), None)
+        if row:
+            admin_db.mark_api_key_used(row["id"])
+            api_key_name = row["name"]
+
     notice: str | None = None
     error: str | None = None
     image_html = ""
+    extra: dict | None = None
+
+    if kind == "edit":
+        upload = form.get("reference_image")
+        if upload is None or not getattr(upload, "filename", ""):
+            error = "Edit mode needs a reference image upload."
+        else:
+            raw = await upload.read()
+            mime = upload.content_type or "image/png"
+            b64 = base64.b64encode(raw).decode("ascii")
+            extra = {"reference_image": f"data:{mime};base64,{b64}"}
+
     if not prompt:
         error = "Prompt is required."
-    else:
+
+    if not error:
         start = time.time()
         try:
             # _dispatch_and_log already writes the history row (success or
             # failure) — no need to log again here.
-            result = await _main._dispatch_and_log(kind, prompt, "", timeout)
+            result = await _main._dispatch_and_log(
+                kind, prompt, "", timeout, extra=extra, api_key_name=api_key_name
+            )
         except Exception as exc:  # queue full / timeout / worker error
             error = f"Request failed: {exc}"
         else:
@@ -342,23 +395,39 @@ def _test_page(
     notice_html = f"<div class='notice'>{notice}</div>" if notice else ""
     error_html = f"<div class='error'>{html.escape(error)}</div>" if error else ""
     result_html = f"<div class='test-result'>{image_html}</div>" if image_html else ""
+    key_options = "".join(
+        f"<option value='{html.escape(k['id'])}'>{html.escape(k['name'])}</option>"
+        for k in admin_db.list_api_keys()
+        if k["enabled"]
+    )
     body = f"""
       <div class="page-head">
         <h2>Test generation</h2>
-        <p class="page-sub">Runs the same worker pool a real caller hits — the image renders here, nothing is saved to disk.</p>
+        <p class="page-sub">Runs the same worker pool a real caller hits — the image renders here, and (like real traffic) also gets saved to History.</p>
       </div>
       {notice_html}
       {error_html}
       <section>
-        <form method="post" action="{prefix}/admin/test-generate" class="form-grid">
+        <form method="post" action="{prefix}/admin/test-generate" enctype="multipart/form-data" class="form-grid">
           <label>Kind
             <select name="kind">
-              <option value="generate" selected>generate (image)</option>
-              <option value="chat">chat (text)</option>
+              <option value="generate" selected>generate — text-to-image, no reference</option>
+              <option value="edit">edit — image-to-image, needs a reference upload below</option>
+              <option value="chat">chat — text only</option>
             </select>
           </label>
           <label>Prompt
             <textarea name="prompt" rows="3" required placeholder="A minimalist orange tabby cat clock face on white"></textarea>
+          </label>
+          <label>Reference image (only used when Kind = edit)
+            <input name="reference_image" type="file" accept="image/*">
+          </label>
+          <label>Attribute to API key (optional — for testing which key shows up in History)
+            <select name="api_key_choice">
+              <option value="">none (anonymous, like an unauthenticated caller)</option>
+              <option value="static">static (.env API_KEYS)</option>
+              {key_options}
+            </select>
           </label>
           <label>Timeout (seconds)
             <input name="timeout" type="number" min="10" max="600" value="{settings.default_timeout}">
@@ -373,15 +442,23 @@ def _test_page(
     return _shell("Test", "test", prefix, body)
 
 
-def _requests_page(prefix: str) -> str:
+def _requests_page(prefix: str, cleanup_result: int | None = None) -> str:
     requests = admin_db.list_recent(200)
+    cleanup_html = ""
+    if cleanup_result is not None:
+        cleanup_html = f"<div class='notice'>Cleanup complete — deleted {cleanup_result} image file(s) older than {settings.image_retention_days}d.</div>"
     body = f"""
       <div class="page-head">
         <h2>History</h2>
-        <p class="page-sub">Last 500 requests (rolling log — prompts only, no images stored).</p>
+        <p class="page-sub">Last 500 requests (rolling log), with which key and worker handled each one and a link to its output image(s).</p>
       </div>
+      {cleanup_html}
       <section>
-        {_requests_table(requests)}
+        <div class="section-title">
+          <h2>Requests</h2>
+          <form method="post" action="{prefix}/admin/cleanup"><button class="ghost" type="submit">Run cleanup</button></form>
+        </div>
+        {_requests_table(requests, prefix)}
       </section>
     """
     return _shell("History", "requests", prefix, body)
@@ -448,12 +525,15 @@ def _activity_feed(requests: list[dict[str, Any]], prefix: str) -> str:
         prompt_short = item.get("prompt") or ""
         if len(prompt_short) > 80:
             prompt_short = prompt_short[:77] + "..."
+        key_name = html.escape(item.get("api_key_name") or "—")
+        worker_str = item.get("worker_id")
+        worker_str = str(worker_str) if worker_str is not None else "—"
         items.append(
             "<li class='activity-item'>"
             f"<div class='activity-row'>{_status_chip(item['status'])}"
             f"<code class='activity-id'>{html.escape(item['kind'])}</code>"
             f"<span class='activity-time'>{when}</span></div>"
-            f"<div class='activity-meta'>{html.escape(prompt_short)}</div>"
+            f"<div class='activity-meta'>key: {key_name} · worker: {worker_str} · {html.escape(prompt_short)}</div>"
             "</li>"
         )
     return "<ul class='activity'>" + "".join(items) + "</ul>"
@@ -513,7 +593,7 @@ def _static_keys_table(keys: list[str]) -> str:
     return f"<table><thead><tr><th>Key (masked)</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
-def _requests_table(requests: list[dict[str, Any]]) -> str:
+def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
     rows = []
     for item in requests:
         error = item.get("error") or ""
@@ -521,22 +601,37 @@ def _requests_table(requests: list[dict[str, Any]]) -> str:
             error = error[:177] + "..."
         duration = item.get("duration_seconds")
         duration_str = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "—"
+        worker_id = item.get("worker_id")
+        worker_str = str(worker_id) if worker_id is not None else "—"
+        links = [
+            f"<a href='{prefix}/generated/{html.escape(Path(p).name)}' target='_blank'>image</a>"
+            for p in (item.get("image_paths") or [])
+        ]
+        delete_form = (
+            f"<form method='post' action='{prefix}/admin/requests/{html.escape(item['id'])}/delete' style='display:inline'"
+            " onsubmit=\"return confirm('Delete this history row and its image(s)?');\">"
+            "<button class='danger' type='submit'>Delete</button></form>"
+        )
         rows.append(
             "<tr>"
             f"<td>{html.escape(item['kind'])}</td>"
             f"<td>{_status_chip(item['status'])}</td>"
+            f"<td>{html.escape(item.get('api_key_name') or '—')}</td>"
+            f"<td>{worker_str}</td>"
             f"<td>{html.escape(item.get('via') or '—')}</td>"
             f"<td>{duration_str}</td>"
             f"<td>{_relative_time(item['created_at'])}</td>"
+            f"<td>{', '.join(links) or '—'}</td>"
             f"<td><details><summary>Prompt</summary><pre>{html.escape(item['prompt'])}</pre></details></td>"
             f"<td><details><summary>Error</summary><pre>{html.escape(error) or '—'}</pre></details></td>"
+            f"<td>{delete_form}</td>"
             "</tr>"
         )
     if not rows:
-        rows.append("<tr><td colspan='7' class='empty'>No requests logged yet.</td></tr>")
+        rows.append("<tr><td colspan='11' class='empty'>No requests logged yet.</td></tr>")
     return (
-        "<table><thead><tr><th>Kind</th><th>Status</th><th>Via</th><th>Duration</th>"
-        "<th>Created</th><th>Prompt</th><th>Error</th></tr></thead><tbody>"
+        "<table><thead><tr><th>Kind</th><th>Status</th><th>Key</th><th>Worker</th><th>Via</th><th>Duration</th>"
+        "<th>Created</th><th>Images</th><th>Prompt</th><th>Error</th><th>Action</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"
     )

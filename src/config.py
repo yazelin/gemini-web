@@ -69,6 +69,12 @@ class Settings:
         )
         self.admin_url_prefix: str = os.getenv("ADMIN_URL_PREFIX", "").rstrip("/")
 
+        # 產出圖片落地（只給 admin History 頁看，API 回應仍是 base64 不受影響）
+        self.generated_dir: str = os.getenv(
+            "GENERATED_DIR", str(Path(_DEFAULT_DATA_DIR) / "generated")
+        )
+        self.image_retention_days: int = _int(os.getenv("IMAGE_RETENTION_DAYS"), 7)
+
         # 官方 Gemini Developer API fallback（付費、快、穩）。
         # mode: "off" 不用 / "fallback" 瀏覽器失敗才頂上 / "primary" 直接用不跑瀏覽器
         self.gemini_official_api_key: str = os.getenv("GEMINI_OFFICIAL_API_KEY", "")

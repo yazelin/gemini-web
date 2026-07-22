@@ -119,7 +119,7 @@ class WorkerPool:
         bm = self._workers[worker_id]
         page = bm.page
         if not page:
-            return {"success": False, "error": "browser_error", "message": f"Worker {worker_id} 瀏覽器未啟動"}
+            return {"success": False, "error": "browser_error", "message": f"Worker {worker_id} 瀏覽器未啟動", "worker_id": worker_id}
 
         logger.info("Worker %d 處理請求：%s", worker_id, kind)
         start = time.time()
@@ -143,7 +143,7 @@ class WorkerPool:
             ref_b64 = (extra or {}).get("reference_image", "")
             if not ref_b64:
                 self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
-                return {"success": False, "error": "invalid_input", "message": "edit 需要 reference_image"}
+                return {"success": False, "error": "invalid_input", "message": "edit 需要 reference_image", "worker_id": worker_id}
             # 強制切到 Banana 模型（網頁版「快捷」），普通 chat 模式不會做 image-to-image
             await switch_model(page, "gemini-3.1-flash-image-preview")
             result = await edit_image(page, prompt, ref_b64, timeout)
@@ -181,6 +181,7 @@ class WorkerPool:
         # 下次 _run 進來時會 await 這個 task,確保乾淨狀態。
         # 對 image gen 特別重要 — openclaw 對 image gen 有 60 秒硬編碼 timeout。
         self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
+        result["worker_id"] = worker_id
         return result
 
     async def worker_status(self) -> list[dict]:

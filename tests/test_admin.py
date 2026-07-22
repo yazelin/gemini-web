@@ -5,9 +5,13 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch
 
-from src import admin_db
+from src import admin_db, image_store
 from src.config import settings
 from src.security import create_admin_session, verify_admin_session
+
+# 1x1 transparent PNG, base64-encoded — smallest valid PNG for round-trip tests.
+_TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+_TINY_PNG_DATA_URL = f"data:image/png;base64,{_TINY_PNG_B64}"
 
 
 # ── security.py ──
@@ -150,10 +154,10 @@ def test_is_valid_api_key_none_configured_rejects_everything(monkeypatch, temp_a
     assert _is_valid_api_key(None) is False
 
 
-def _fake_request():
+def _fake_request(headers=None):
     from starlette.requests import Request
 
-    return Request(scope={"type": "http", "headers": [], "query_string": b""})
+    return Request(scope={"type": "http", "headers": headers or [], "query_string": b""})
 
 
 def test_verify_api_key_open_when_nothing_configured(monkeypatch, temp_admin_db):
@@ -389,3 +393,242 @@ async def test_admin_disable_and_delete_api_key(temp_admin_db):
         delete_resp = await client.post(f"/admin/api-keys/{row['id']}/delete", follow_redirects=True)
         assert delete_resp.status_code == 200
     assert temp_admin_db.list_api_keys() == []
+
+
+# ── image_store.py ──
+
+
+def test_save_images_writes_files_and_returns_filenames(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images([_TINY_PNG_DATA_URL])
+    assert len(filenames) == 1
+    assert (tmp_path / "generated" / filenames[0]).is_file()
+    assert filenames[0].endswith(".png")
+
+
+def test_save_images_skips_undecodable_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images(["not base64 at all!!"])
+    assert filenames == []
+
+
+def test_delete_files_removes_named_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images([_TINY_PNG_DATA_URL])
+    image_store.delete_files(filenames)
+    assert not (tmp_path / "generated" / filenames[0]).exists()
+
+
+def test_sweep_old_deletes_files_past_retention(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images([_TINY_PNG_DATA_URL])
+    old_path = tmp_path / "generated" / filenames[0]
+    old_time = time.time() - 10 * 86400  # 10 days old
+    os.utime(old_path, (old_time, old_time))
+
+    deleted = image_store.sweep_old(retention_days=7)
+    assert deleted == 1
+    assert not old_path.exists()
+
+
+def test_sweep_old_keeps_recent_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images([_TINY_PNG_DATA_URL])
+    deleted = image_store.sweep_old(retention_days=7)
+    assert deleted == 0
+    assert (tmp_path / "generated" / filenames[0]).exists()
+
+
+# ── admin_db.py: image_paths / api_key_name / worker_id ──
+
+
+def test_record_and_get_request_roundtrip(temp_admin_db):
+    request_id = temp_admin_db.record(
+        kind="generate",
+        prompt="a cat",
+        status="succeeded",
+        image_paths=["abc123.png"],
+        api_key_name="line-sticker-studio",
+        worker_id=1,
+    )
+    row = temp_admin_db.get_request(request_id)
+    assert row["image_paths"] == ["abc123.png"]
+    assert row["api_key_name"] == "line-sticker-studio"
+    assert row["worker_id"] == 1
+
+    listed = temp_admin_db.list_recent(10)
+    assert listed[0]["image_paths"] == ["abc123.png"]
+
+
+def test_delete_request_removes_row(temp_admin_db):
+    request_id = temp_admin_db.record(kind="generate", prompt="x", status="succeeded")
+    temp_admin_db.delete_request(request_id)
+    assert temp_admin_db.get_request(request_id) is None
+
+
+def test_get_request_missing_returns_none(temp_admin_db):
+    assert temp_admin_db.get_request("does-not-exist") is None
+
+
+# ── main.py: _identify_caller + image persistence wired into _dispatch_and_log ──
+
+
+def test_identify_caller_no_key_present():
+    from src.main import _identify_caller
+
+    assert _identify_caller(None) == ""
+
+
+def test_identify_caller_static_key(monkeypatch, temp_admin_db):
+    from src.main import _identify_caller
+
+    monkeypatch.setattr(settings, "api_keys", {"static-123"})
+    req = _fake_request(headers=[(b"x-goog-api-key", b"static-123")])
+    assert _identify_caller(req) == "static"
+
+
+def test_identify_caller_dynamic_key_bumps_usage(monkeypatch, temp_admin_db):
+    from src.main import _identify_caller
+
+    monkeypatch.setattr(settings, "api_keys", set())
+    row, raw_key = temp_admin_db.create_api_key("line-sticker-studio")
+    req = _fake_request(headers=[(b"x-goog-api-key", raw_key.encode())])
+    assert _identify_caller(req) == "line-sticker-studio"
+    assert temp_admin_db.list_api_keys()[0]["requests_count"] == 1
+
+
+def test_identify_caller_unknown_key():
+    from src.main import _identify_caller
+
+    req = _fake_request(headers=[(b"x-goog-api-key", b"totally-made-up")])
+    assert _identify_caller(req) == "unknown key"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_and_log_saves_images_and_records_worker_id(mock_worker_pool, temp_admin_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    mock_worker_pool.dispatch = AsyncMock(
+        return_value={"success": True, "images": [_TINY_PNG_DATA_URL], "worker_id": 1}
+    )
+    from src.main import _dispatch_and_log
+
+    result = await _dispatch_and_log("generate", "a cat", "", 30)
+    assert result["worker_id"] == 1
+
+    rows = temp_admin_db.list_recent(1)
+    assert rows[0]["worker_id"] == 1
+    assert len(rows[0]["image_paths"]) == 1
+    assert (tmp_path / "generated" / rows[0]["image_paths"][0]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_and_log_api_key_name_override(mock_worker_pool, temp_admin_db):
+    mock_worker_pool.dispatch = AsyncMock(return_value={"success": True, "images": []})
+    from src.main import _dispatch_and_log
+
+    await _dispatch_and_log("chat", "hi", "", 30, api_key_name="manually-picked")
+    rows = temp_admin_db.list_recent(1)
+    assert rows[0]["api_key_name"] == "manually-picked"
+
+
+# ── admin routes: edit mode upload, cleanup, per-row delete ──
+
+
+@pytest.mark.asyncio
+async def test_admin_test_generate_edit_mode_with_upload(mock_worker_pool, temp_admin_db, tmp_path, monkeypatch):
+    import base64
+
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    mock_worker_pool.dispatch = AsyncMock(
+        return_value={"success": True, "images": [_TINY_PNG_DATA_URL], "worker_id": 0}
+    )
+    from src.main import app
+
+    transport = ASGITransport(app=app)
+    png_bytes = base64.b64decode(_TINY_PNG_B64)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/admin/login", data={"username": "admin", "password": "test-pass"})
+        resp = await client.post(
+            "/admin/test-generate",
+            data={"kind": "edit", "prompt": "make it blue", "timeout": "30"},
+            files={"reference_image": ("ref.png", png_bytes, "image/png")},
+        )
+    assert resp.status_code == 200
+    assert "test-result-img" in resp.text
+    call_kwargs = mock_worker_pool.dispatch.call_args
+    assert call_kwargs.kwargs["extra"]["reference_image"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_admin_test_generate_edit_mode_without_upload_errors(temp_admin_db):
+    from src.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/admin/login", data={"username": "admin", "password": "test-pass"})
+        resp = await client.post(
+            "/admin/test-generate", data={"kind": "edit", "prompt": "make it blue", "timeout": "30"}
+        )
+    assert resp.status_code == 200
+    assert "needs a reference image" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_admin_test_generate_attributes_to_chosen_key(mock_worker_pool, temp_admin_db):
+    mock_worker_pool.dispatch = AsyncMock(return_value={"success": True, "images": []})
+    row, _ = temp_admin_db.create_api_key("line-sticker-studio")
+
+    from src.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/admin/login", data={"username": "admin", "password": "test-pass"})
+        await client.post(
+            "/admin/test-generate",
+            data={"kind": "chat", "prompt": "hi", "timeout": "30", "api_key_choice": row["id"]},
+        )
+    rows = temp_admin_db.list_recent(1)
+    assert rows[0]["api_key_name"] == "line-sticker-studio"
+    assert temp_admin_db.list_api_keys()[0]["requests_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_cleanup_route(temp_admin_db, tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images([_TINY_PNG_DATA_URL])
+    old_path = tmp_path / "generated" / filenames[0]
+    old_time = time.time() - 10 * 86400
+    os.utime(old_path, (old_time, old_time))
+
+    from src.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/admin/login", data={"username": "admin", "password": "test-pass"})
+        resp = await client.post("/admin/cleanup")
+    assert resp.status_code == 200
+    assert "Cleanup complete" in resp.text
+    assert not old_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_request_removes_row_and_file(temp_admin_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "generated_dir", str(tmp_path / "generated"))
+    filenames = image_store.save_images([_TINY_PNG_DATA_URL])
+    request_id = temp_admin_db.record(
+        kind="generate", prompt="x", status="succeeded", image_paths=filenames
+    )
+
+    from src.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/admin/login", data={"username": "admin", "password": "test-pass"})
+        resp = await client.post(f"/admin/requests/{request_id}/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert temp_admin_db.get_request(request_id) is None
+    assert not (tmp_path / "generated" / filenames[0]).exists()

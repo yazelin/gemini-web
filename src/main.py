@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -42,6 +43,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gemini Image API", lifespan=lifespan)
 app.include_router(admin_router)
+# StaticFiles stats `directory` on every request, even with check_dir=False
+# (that flag only skips the *startup* check) — must exist up front, not just
+# get created lazily by image_store.save_images() on the first generation,
+# or every request before that first save 500s instead of 404ing.
+Path(settings.generated_dir).mkdir(parents=True, exist_ok=True)
 app.mount(
     "/generated",
     StaticFiles(directory=settings.generated_dir, check_dir=False),

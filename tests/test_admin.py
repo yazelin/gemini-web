@@ -632,3 +632,26 @@ async def test_admin_delete_request_removes_row_and_file(temp_admin_db, tmp_path
     assert resp.status_code == 200
     assert temp_admin_db.get_request(request_id) is None
     assert not (tmp_path / "generated" / filenames[0]).exists()
+
+
+# ── /generated static mount: dir-not-yet-created shouldn't 500 ──
+
+
+def test_static_files_dir_must_exist_before_first_request(tmp_path):
+    """Documents the bug main.py's mkdir-before-mount guards against:
+    StaticFiles(check_dir=False) only skips the *startup* existence check —
+    it still os.stat()s `directory` on every request. If the dir is only
+    created lazily later (e.g. by image_store on first successful save), any
+    request to /generated/* before that first save 500s instead of 404ing."""
+    from starlette.applications import Starlette
+    from starlette.staticfiles import StaticFiles
+    from starlette.testclient import TestClient
+
+    missing_dir = tmp_path / "generated"  # deliberately not created yet
+    app = Starlette()
+    app.mount("/generated", StaticFiles(directory=str(missing_dir), check_dir=False))
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.get("/generated/nonexistent.png").status_code == 500
+
+    missing_dir.mkdir(parents=True, exist_ok=True)  # main.py does this before mounting
+    assert client.get("/generated/nonexistent.png").status_code == 404

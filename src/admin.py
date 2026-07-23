@@ -172,6 +172,19 @@ async def cleanup(request: Request):
     return HTMLResponse(_requests_page(_prefix(request), cleanup_result=deleted))
 
 
+@router.post("/admin/dispatch-mode", include_in_schema=False)
+async def set_dispatch_mode(request: Request) -> RedirectResponse:
+    if not _admin_user(request):
+        return _redirect_login(request)
+    from . import main as _main  # deferred: circular import
+
+    form = await request.form()
+    mode = str(form.get("mode") or "")
+    _main.worker_pool.set_mode(mode)          # 立即生效（跑中不用重啟）
+    admin_db.set_setting("dispatch_mode", _main.worker_pool.mode)  # 存檔，重啟後續用
+    return RedirectResponse(_url(request, "/admin"), status_code=303)
+
+
 @router.post("/admin/requests/{request_id}/delete", include_in_schema=False)
 async def delete_request(request: Request, request_id: str) -> RedirectResponse:
     if not _admin_user(request):
@@ -307,7 +320,8 @@ async def _overview_page(request: Request) -> str:
     prefix = _prefix(request)
     stats = admin_db.stats()
     recent = admin_db.list_recent(10)
-    worker_statuses = await _main.worker_pool.worker_status()
+    worker_statuses = await _main.worker_pool.worker_status(include_account=True)
+    mode = _main.worker_pool.mode
     uptime = round(time.time() - _main._start_time)
     body = f"""
       <div class="page-head">
@@ -321,7 +335,10 @@ async def _overview_page(request: Request) -> str:
         <div><strong>{_format_uptime(uptime)}</strong><span>Uptime</span></div>
       </section>
       <section>
-        <h2>Workers</h2>
+        <div class="section-title">
+          <h2>Workers</h2>
+          {_dispatch_mode_form(prefix, mode)}
+        </div>
         {_worker_table(worker_statuses)}
       </section>
       <section>
@@ -501,17 +518,41 @@ def _relative_time(iso: str | None) -> str:
     return f"{int(delta // 86400)}d ago"
 
 
+_MODE_LABELS = {
+    "round-robin": "Round-robin（輪流分攤配額）",
+    "spillover": "Spillover（worker 0 主力，其餘備援）",
+}
+
+
+def _dispatch_mode_form(prefix: str, current: str) -> str:
+    opts = "".join(
+        f"<option value='{m}'{' selected' if m == current else ''}>{html.escape(label)}</option>"
+        for m, label in _MODE_LABELS.items()
+    )
+    return (
+        f"<form method='post' action='{prefix}/admin/dispatch-mode' class='mode-form'>"
+        "<label>Dispatch mode "
+        f"<select name='mode'>{opts}</select></label> "
+        "<button type='submit'>Apply</button></form>"
+    )
+
+
 def _worker_table(statuses: list[dict[str, Any]]) -> str:
     rows = []
     for s in statuses:
         alive = "<span class='chip chip-ok'>alive</span>" if s["alive"] else "<span class='chip chip-fail'>down</span>"
         logged_in = "<span class='chip chip-ok'>yes</span>" if s["logged_in"] else "<span class='chip chip-fail'>no</span>"
         busy = "<span class='chip chip-run'>busy</span>" if s["busy"] else "<span class='chip chip-mute'>idle</span>"
-        rows.append(f"<tr><td>{s['id']}</td><td>{alive}</td><td>{logged_in}</td><td>{busy}</td></tr>")
+        account = html.escape(s.get("account") or "—")
+        rows.append(
+            f"<tr><td>{s['id']}</td><td>{account}</td><td>{alive}</td>"
+            f"<td>{logged_in}</td><td>{busy}</td></tr>"
+        )
     if not rows:
-        rows.append("<tr><td colspan='4' class='empty'>No workers.</td></tr>")
+        rows.append("<tr><td colspan='5' class='empty'>No workers.</td></tr>")
     return (
-        "<table><thead><tr><th>ID</th><th>Alive</th><th>Logged in</th><th>Status</th></tr></thead>"
+        "<table><thead><tr><th>ID</th><th>Account</th><th>Alive</th>"
+        "<th>Logged in</th><th>Status</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 

@@ -55,6 +55,9 @@ def _connect() -> sqlite3.Connection:
         if col not in existing_cols:
             conn.execute(ddl)
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS api_keys (
             id TEXT PRIMARY KEY,
@@ -192,6 +195,24 @@ def disable_api_key(key_id: str) -> None:
 def delete_api_key(key_id: str) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+
+
+# ── generic settings (dispatch mode 等) ──
+
+
+def get_setting(key: str, default: str = "") -> str:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 def has_any_dynamic_key() -> bool:

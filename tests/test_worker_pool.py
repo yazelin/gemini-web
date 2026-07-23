@@ -29,6 +29,8 @@ async def test_dispatch_uses_available_worker(mock_browser_managers):
     pool._locks = [asyncio.Lock() for _ in mock_browser_managers]
     pool._max_waiting = 10
     pool._waiting = 0
+    pool._mode = "spillover"
+    pool._next = 0
 
     call_log = []
 
@@ -63,6 +65,8 @@ async def test_parallel_dispatch():
     pool._locks = [asyncio.Lock(), asyncio.Lock()]
     pool._max_waiting = 10
     pool._waiting = 0
+    pool._mode = "spillover"
+    pool._next = 0
 
     async def slow_run(worker_id, kind, prompt, model, timeout, extra=None):
         workers_used.append(worker_id)
@@ -83,6 +87,41 @@ async def test_parallel_dispatch():
     assert len(results) == 2
     assert all(r["success"] for r in results)
     assert set(workers_used) == {0, 1}
+
+
+def test_pick_idle_round_robin_spreads():
+    """round-robin：序列請求(每次都全空閒)應輪流 0,1,0,1 而非黏在 0。"""
+    from src.worker_pool import WorkerPool
+
+    pool = WorkerPool.__new__(WorkerPool)
+    pool._locks = [asyncio.Lock(), asyncio.Lock()]
+    pool._mode = "round-robin"
+    pool._next = 0
+    # 每次挑完假設請求瞬間完成(lock 沒真的鎖住)→ 純測指標輪替
+    assert [pool._pick_idle() for _ in range(4)] == [0, 1, 0, 1]
+
+
+def test_pick_idle_spillover_prefers_zero():
+    """spillover：worker 0 空閒就永遠回 0。"""
+    from src.worker_pool import WorkerPool
+
+    pool = WorkerPool.__new__(WorkerPool)
+    pool._locks = [asyncio.Lock(), asyncio.Lock()]
+    pool._mode = "spillover"
+    pool._next = 0
+    assert [pool._pick_idle() for _ in range(3)] == [0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_pick_idle_all_busy_returns_none():
+    from src.worker_pool import WorkerPool
+
+    pool = WorkerPool.__new__(WorkerPool)
+    pool._locks = [asyncio.Lock(), asyncio.Lock()]
+    pool._mode = "round-robin"
+    pool._next = 0
+    async with pool._locks[0], pool._locks[1]:
+        assert pool._pick_idle() is None
 
 
 @pytest.mark.asyncio

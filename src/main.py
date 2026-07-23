@@ -35,8 +35,12 @@ _start_time = time.time()
 async def lifespan(app: FastAPI):
     """服務生命週期：啟動 worker pool，結束時清理"""
     admin_db.init_db()
+    worker_pool.set_mode(admin_db.get_setting("dispatch_mode", "round-robin"))
     await worker_pool.start()
-    logger.info("服務已啟動，%d 個 worker，port %d", settings.worker_count, settings.port)
+    logger.info(
+        "服務已啟動，%d 個 worker，dispatch=%s，port %d",
+        settings.worker_count, worker_pool.mode, settings.port,
+    )
     yield
     await worker_pool.stop()
 

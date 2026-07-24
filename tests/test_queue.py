@@ -9,7 +9,6 @@ async def test_queue_full_rejects():
     """等待數超過上限時應拋出 QueueFullError"""
     pool = WorkerPool.__new__(WorkerPool)
     pool._workers = []
-    pool._locks = []
     pool._max_waiting = 0
     pool._waiting = 0
 

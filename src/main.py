@@ -380,8 +380,10 @@ async def _generate_content_impl(model: str, body: dict, request: Request | None
 
     # Debug: 觀察 prompt 規模,multi-turn 累積後可能超大導致 Gemini Web 卡住
     contents_count = len(body.get("contents", []) or [])
+    # 標的是「google-genai 相容端點」這條路,不是某個特定 caller —
+    # openclaw / catime / 新聞 agent 都走這條,別再拿消費者名當標籤。
     logger.info(
-        "openclaw request: prompt=%d chars, turns=%d, tools=%d, has_tool_call=%s",
+        "genai request: prompt=%d chars, turns=%d, tools=%d, has_tool_call=%s",
         len(prompt), contents_count, len(allowed_tool_names), has_function_tools,
     )
 

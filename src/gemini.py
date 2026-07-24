@@ -90,6 +90,36 @@ _IMG_TO_BASE64_JS = """
 }
 """
 
+# 瀏覽器端 JS：點掉 onboarding 提示橫幅（如「我知道了」）。
+# 這類橫幅會蓋住/攔截下載按鈕的 pointer 事件,害 btn.hover() 空等逾時 →
+# 只能退到 canvas 縮圖。用 JS .click() 直接點(不受遮擋影響),把它關掉,
+# 下載按鈕才能正常按、拿全解析度原檔。標籤保守列舉,避免誤點真的確認框。
+_DISMISS_BANNER_JS = """
+() => {
+  const LABELS = ['我知道了','知道了','Got it','了解','Dismiss','No thanks','Not now','稍後再說','稍後'];
+  const clicked = [];
+  document.querySelectorAll('button').forEach(b => {
+    const t = (b.innerText || '').trim();
+    if (t && t.length < 12 && LABELS.some(l => t === l || t.includes(l))) {
+      try { b.click(); clicked.push(t); } catch (e) {}
+    }
+  });
+  return clicked;
+}
+"""
+
+
+async def _dismiss_onboarding(page: Page) -> None:
+    """點掉「我知道了」之類 onboarding 橫幅。非致命,失敗就算了。"""
+    try:
+        clicked = await page.evaluate(_DISMISS_BANNER_JS)
+        if clicked:
+            logger.info("關閉 onboarding 橫幅: %s", clicked)
+            await asyncio.sleep(0.3)
+    except Exception:
+        pass
+
+
 # 拒絕生圖的常見文字片段
 _BLOCK_PHRASES = [
     "I can't generate",
@@ -191,6 +221,9 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
             await asyncio.sleep(0.5)
         except Exception:
             pass
+
+        # 1.6 點掉「我知道了」等橫幅（否則會擋住後面的下載按鈕）
+        await _dismiss_onboarding(page)
 
         # 1.7 點擊 Tools → Create image 進入圖片生成模式
         switched_to_create_image = False
@@ -478,6 +511,9 @@ async def edit_image(
             await asyncio.sleep(0.5)
         except Exception:
             pass
+
+        # 1.6 點掉「我知道了」等橫幅（否則會擋住後面的下載按鈕）
+        await _dismiss_onboarding(page)
 
         # 1.7 image edit 不切 Create image 模式
         # 原因：Create image 模式的 UI 沒有上傳檔案選單；Banana 模型在普通

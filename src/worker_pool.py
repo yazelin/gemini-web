@@ -39,7 +39,12 @@ class WorkerPool:
         self._mode = "round-robin"
         self._next = 0  # round-robin 指標
         self._workers: list[BrowserManager] = []
-        self._locks: list[asyncio.Lock] = []
+        # 空閒 worker id 的集合 + 一個「有 worker 空出來了」的訊號。
+        # 取 worker = 從 set 挑一個移除(同步、原子);還 worker = 加回 set(同步)。
+        # 關鍵:_release 是同步的,放進 finally 裡不會被 cancel 打斷 → worker 一定
+        # 還得回來,不會像舊版 lock.acquire()+cancel 那樣洩漏鎖把 worker 卡死。
+        self._idle_ids: set[int] = set()
+        self._free: asyncio.Event | None = None
         # 每個 worker 的「待完成 reset」task。下次請求進來時必須先 await
         # 這個 task,確保上一次的對話已經乾淨重置才開始新請求。
         # 但 _run 不會 block 在 reset 上 — 它會提前 return result,讓 client
@@ -49,14 +54,16 @@ class WorkerPool:
 
     async def start(self) -> None:
         """啟動所有 worker 的瀏覽器"""
+        self._free = asyncio.Event()
         for i in range(self._count):
             profile_dir = get_worker_profile_dir(i)
             bm = BrowserManager(profile_dir=profile_dir)
             await bm.start()
             self._workers.append(bm)
-            self._locks.append(asyncio.Lock())
             self._pending_resets.append(None)
+            self._idle_ids.add(i)
             logger.info("Worker %d 已啟動（profile: %s）", i, profile_dir)
+        self._free.set()
 
     async def stop(self) -> None:
         """關閉所有 worker"""
@@ -87,66 +94,49 @@ class WorkerPool:
         finally:
             self._waiting -= 1
 
-    def _pick_idle(self) -> int | None:
-        """依 dispatch mode 挑一個空閒 worker 的 index，全忙回 None。
+    def _select(self) -> int:
+        """從 _idle_ids 依 dispatch mode 挑一個 worker 並「取走」(從 set 移除)。
 
-        round-robin 會把 _next 指標往前推,讓下一次從別的 worker 起算。
-        （check 到 acquire 之間的 race 由呼叫端的 `async with lock` 兜底，
-        跟舊版同一個結構。）
+        呼叫前必須確定 _idle_ids 非空。純同步、無 await → check 到取走之間不會
+        被別的 coroutine 插隊(single-thread event loop 的原子區間)。
         """
-        n = len(self._locks)
-        if self._mode == "round-robin" and n:
-            for off in range(n):
-                i = (self._next + off) % n
-                if not self._locks[i].locked():
-                    self._next = (i + 1) % n
-                    return i
-            return None
-        for i, lock in enumerate(self._locks):
-            if not lock.locked():
-                return i
-        return None
+        if self._mode == "round-robin":
+            for off in range(self._count):
+                wid = (self._next + off) % self._count
+                if wid in self._idle_ids:
+                    self._next = (wid + 1) % self._count
+                    self._idle_ids.discard(wid)
+                    return wid
+        # spillover:永遠挑編號最小的空閒 worker(worker 0 主力)
+        wid = min(self._idle_ids)
+        self._idle_ids.discard(wid)
+        return wid
+
+    async def _acquire(self) -> int:
+        """等到有空閒 worker,取走一個並回傳其 id(全忙就 await 到有人還回來)。"""
+        assert self._free is not None, "pool 尚未 start()"
+        while not self._idle_ids:
+            self._free.clear()
+            await self._free.wait()
+        wid = self._select()
+        if not self._idle_ids:
+            self._free.clear()
+        return wid
+
+    def _release(self, wid: int) -> None:
+        """把 worker 還回空閒池。同步、絕不 await → 可安全放進 finally,
+        即使請求被 cancel / 逾時 / 拋錯,worker 也一定回得來。"""
+        self._idle_ids.add(wid)
+        if self._free is not None:
+            self._free.set()
 
     async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
-        """嘗試取得空閒 worker 的 lock，取得後執行請求"""
-        while True:
-            # Try to grab an idle worker per dispatch mode
-            i = self._pick_idle()
-            if i is not None:
-                lock = self._locks[i]
-                if not lock.locked():
-                    async with lock:
-                        return await self._run(i, kind, prompt, model, timeout, extra)
-
-            # All busy — create a task per lock and wait for the first one
-            acquire_tasks = {
-                asyncio.create_task(lock.acquire()): i
-                for i, lock in enumerate(self._locks)
-            }
-            try:
-                done, pending = await asyncio.wait(
-                    acquire_tasks.keys(),
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                # Cancel the rest
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-
-                # Use the first completed worker
-                for task in done:
-                    worker_id = acquire_tasks[task]
-                    try:
-                        return await self._run(worker_id, kind, prompt, model, timeout, extra)
-                    finally:
-                        self._locks[worker_id].release()
-            except Exception:
-                for task in acquire_tasks:
-                    task.cancel()
-                raise
+        """取一個空閒 worker 跑請求,結束/逾時/出錯都保證把它還回池子。"""
+        wid = await self._acquire()
+        try:
+            return await self._run(wid, kind, prompt, model, timeout, extra)
+        finally:
+            self._release(wid)
 
     async def _run(self, worker_id: int, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
         """在指定 worker 上執行請求"""
@@ -233,7 +223,7 @@ class WorkerPool:
                 "id": i,
                 "alive": alive,
                 "logged_in": logged_in,
-                "busy": self._locks[i].locked(),
+                "busy": i not in self._idle_ids,
             }
             if include_account:
                 s["account"] = _profile_account(get_worker_profile_dir(i))

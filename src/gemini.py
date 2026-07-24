@@ -334,11 +334,13 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
             for i, btn in enumerate(download_btns):
                 try:
                     logger.info("圖片 %d：嘗試點擊下載按鈕...", i)
-                    # 先 hover 圖片讓 on-hover-button 顯示
+                    # 先 hover 圖片讓 on-hover-button 顯示。hover 給 5 秒上限:
+                    # 某些帳號的 Gemini UI 有殘留橫幅(如「我知道了」)蓋住按鈕,
+                    # hover 會空等預設 30 秒。快速失敗 → 退到下面的 canvas 後備。
                     if img_els and i < len(img_els):
-                        await img_els[i].hover()
+                        await img_els[i].hover(timeout=5_000)
                         await asyncio.sleep(0.5)
-                    await btn.hover()
+                    await btn.hover(timeout=5_000)
                     await asyncio.sleep(0.3)
                     # 240 秒 download timeout (Gemini Pro 高解析度原圖伺服器
                     # 偶爾需要 > 30 秒生成。openclaw 內建 image_generate 工具的
@@ -361,16 +363,18 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                 except Exception as e:
                     logger.warning("圖片 %d 下載按鈕失敗：%s，改用 img src", i, e)
 
-        # 備用：直接從 img src 下載（可能是縮圖）
+        # 備用：直接從 img src 取圖。三種 src 都要接得住:
+        #   data:  → 直接用
+        #   http:  → server 端抓
+        #   blob: / 無 src → canvas 後備(跟 edit_image 同一招)。worker 1 那類
+        #                    帳號生出來的圖是 blob:,少了這條就會 browser_error。
         if not images:
             for i, img_el in enumerate(img_els):
                 try:
                     src = await img_el.get_attribute("src")
-                    if not src:
-                        continue
-                    if src.startswith("data:image"):
+                    if src and src.startswith("data:image"):
                         images.append(src)
-                    elif src.startswith("http"):
+                    elif src and src.startswith("http"):
                         resp = await page.context.request.get(src)
                         if resp.ok:
                             body = await resp.body()
@@ -378,6 +382,13 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
                             b64 = _b64.b64encode(body).decode("ascii")
                             images.append(f"data:{content_type};base64,{b64}")
                             logger.info("圖片 %d 從 src 下載，%d bytes", i, len(body))
+                    else:
+                        data_url = await img_el.evaluate(_CANVAS_EXTRACT_JS)
+                        if data_url:
+                            images.append(data_url)
+                            logger.info("圖片 %d 從 canvas 擷取，%d chars", i, len(data_url))
+                        else:
+                            logger.warning("圖片 %d canvas 擷取回傳空（src=%s）", i, str(src)[:40])
                 except Exception as e:
                     logger.warning("圖片 %d 擷取失敗：%s", i, e)
 

@@ -703,3 +703,16 @@ def test_relative_time_handles_future():
 
     past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     assert past and _relative_time(past).endswith("ago")
+
+
+def test_tables_are_wrapped_for_horizontal_scroll():
+    """History 有 12 欄，塞不下時要讓表格自己捲，而不是整片爆出版面。"""
+    from src.admin import _keys_table, _requests_table, _worker_table
+
+    for html_out in (
+        _requests_table([], ""),
+        _worker_table([], {}),
+        _keys_table([], ""),
+    ):
+        assert html_out.startswith("<div class='table-wrap'>")
+        assert html_out.endswith("</table></div>")

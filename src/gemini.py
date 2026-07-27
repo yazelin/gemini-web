@@ -550,18 +550,30 @@ async def edit_image(
                     await page.click(SELECTORS["upload_menu_item_local"])
                 file_chooser = await fc_info.value
             except Exception:
-                # 沒跳檔案對話框 → 這個帳號多一層子選單。印出當下 overlay 內容，
-                # 再點裡面的本機上傳項；選擇器又變時，log 就是下一次的線索。
+                # 沒跳檔案對話框。印出當下 overlay（選擇器再變時就是下一次的線索），
+                # 再依序試兩種已知變體：
+                #   1. 同意條款對話框 —— 該帳號第一次用上傳功能，overlay 會多出
+                #      「取消 / 同意」，按下「同意」才會開 file dialog（實測就是
+                #      worker 1/3 全滅的真正原因）
+                #   2. 多一層子選單（從電腦 / 從裝置上傳）
                 try:
-                    submenu = await page.evaluate(_DUMP_MENU_JS)
+                    overlay = await page.evaluate(_DUMP_MENU_JS)
                     logger.warning("沒跳 file chooser，當下 overlay: %s",
-                                   json.dumps(submenu, ensure_ascii=False)[:400])
+                                   json.dumps(overlay, ensure_ascii=False)[:400])
                 except Exception:
-                    submenu = []
-                async with page.expect_file_chooser(timeout=9_000) as fc_info:
-                    await page.click(SELECTORS["upload_submenu_item_device"])
-                file_chooser = await fc_info.value
-                logger.info("走子選單拿到 file chooser")
+                    pass
+                file_chooser = None
+                for sel in ("upload_consent_accept", "upload_submenu_item_device"):
+                    try:
+                        async with page.expect_file_chooser(timeout=8_000) as fc_info:
+                            await page.click(SELECTORS[sel], timeout=3_000)
+                        file_chooser = await fc_info.value
+                        logger.info("靠 %s 拿到 file chooser", sel)
+                        break
+                    except Exception:
+                        continue
+                if file_chooser is None:
+                    raise RuntimeError("點完上傳檔案沒有 file chooser，同意鈕與子選單都試過了")
             await file_chooser.set_files(tmp_path)
             logger.info("已 set_files：%s（%d bytes）", tmp_path, len(img_bytes))
         except Exception as e:

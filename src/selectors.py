@@ -78,6 +78,19 @@ SELECTORS = {
         ".cdk-overlay-container button[role='menuitem']:has-text('Upload files')"
     ),
 
+    # 2026-07：帳號第一次用上傳功能時，點「上傳檔案」會先跳一個同意條款的對話框
+    # （overlay 多出「取消 / 同意」兩顆），按下同意才會開 file dialog。worker 1/3
+    # 的 edit 全滅就是卡在這。限定在 overlay 內、且避開「取消」。
+    "upload_consent_accept": (
+        ".cdk-overlay-container button:has-text('同意'), "
+        ".cdk-overlay-container button:has-text('接受'), "
+        ".cdk-overlay-container button:has-text('繼續'), "
+        ".cdk-overlay-container button:has-text('I agree'), "
+        ".cdk-overlay-container button:has-text('Agree'), "
+        ".cdk-overlay-container button:has-text('Accept'), "
+        ".cdk-overlay-container button:has-text('Continue')"
+    ),
+
     # 2026-07：有些帳號點「上傳檔案」後不是直接開 file dialog，而是再展開一層
     # 子選單（從電腦上傳 / 從裝置上傳 / 相簿…）。這條抓子選單裡的本機上傳項；
     # 排除「雲端硬碟」「相簿」「NotebookLM」那幾個會導去別處的。

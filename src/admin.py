@@ -323,6 +323,10 @@ async def _overview_page(request: Request) -> str:
     worker_statuses = await _main.worker_pool.worker_status(include_account=True)
     mode = _main.worker_pool.mode
     uptime = round(time.time() - _main._start_time)
+    # 排隊中 + 正在跑。以前這個數字只在 /api/health 的 JSON 裡，儀表板看不到，
+    # 但「是不是塞車」正是看儀表板的人第一個想知道的事（codex-image-service
+    # 那邊早就有這格）。
+    queued = _main.worker_pool.waiting_count + sum(1 for w in worker_statuses if w["busy"])
     body = f"""
       <div class="page-head">
         <h2>Overview</h2>
@@ -332,6 +336,7 @@ async def _overview_page(request: Request) -> str:
         <div><strong>{stats['total']}</strong><span>Requests logged</span></div>
         <div><strong>{stats['succeeded']}</strong><span>Succeeded</span></div>
         <div><strong>{stats['failed']}</strong><span>Failed</span></div>
+        <div><strong>{queued}</strong><span>Queued / running</span></div>
         <div><strong>{_format_uptime(uptime)}</strong><span>Uptime</span></div>
       </section>
       <section>
@@ -651,6 +656,13 @@ def _static_keys_table(keys: list[str]) -> str:
     return f"<table><thead><tr><th>Key (masked)</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
+def _peek(text: str, limit: int = 90) -> str:
+    """摘要用的單行預覽：換行壓掉再截斷。History 每筆都要點開 <details> 才知道
+    是哪一張圖、哪一類失敗，太浪費點擊。"""
+    one_line = " ".join((text or "").split())
+    return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
+
+
 def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
     rows = []
     for item in requests:
@@ -680,8 +692,13 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
             f"<td>{duration_str}</td>"
             f"<td>{_relative_time(item['created_at'])}</td>"
             f"<td>{', '.join(links) or '—'}</td>"
-            f"<td><details><summary>Prompt</summary><pre>{html.escape(item['prompt'])}</pre></details></td>"
-            f"<td><details><summary>Error</summary><pre>{html.escape(error) or '—'}</pre></details></td>"
+            f"<td class='cell-peek'><details><summary>{html.escape(_peek(item['prompt'])) or 'Prompt'}</summary>"
+            f"<pre>{html.escape(item['prompt'])}</pre></details></td>"
+            + (
+                f"<td class='cell-peek'><details><summary class='summary-error'>{html.escape(_peek(error))}</summary>"
+                f"<pre>{html.escape(error)}</pre></details></td>"
+                if error else "<td class='cell-peek'>—</td>"
+            ) +
             f"<td>{delete_form}</td>"
             "</tr>"
         )
@@ -1023,6 +1040,23 @@ _STYLES = """
   tbody tr:hover { background: #f8f9ff; }
   td.actions { white-space: nowrap; }
   td.empty { text-align: center; color: var(--muted); padding: 32px 12px; }
+  /* 表格裡的按鈕用小一號的尺寸：沿用全域 pill 會佔掉兩行高，而那一格只有一顆
+     按鈕，空的那行純浪費。 */
+  td button { padding: 5px 14px; font-size: 12.5px; box-shadow: none; }
+  td form { margin: 0; }
+
+  /* History 的 Prompt / Error 欄：摘要行直接顯示前 90 字，要全文再展開 */
+  td.cell-peek { max-width: 320px; }
+  td.cell-peek summary {
+    cursor: pointer; color: var(--ink-soft);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  td.cell-peek summary:hover { color: var(--ink); }
+  td.cell-peek summary.summary-error { color: var(--danger); }
+  td.cell-peek pre {
+    white-space: pre-wrap; word-break: break-word;
+    margin: 8px 0 0; font-size: 12px;
+  }
   code.handle { background: transparent; color: var(--muted); padding: 0; font-size: 11.5px; }
   .key-name { color: var(--ink); font-weight: 600; font-size: 14px; }
 

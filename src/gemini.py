@@ -526,23 +526,42 @@ async def edit_image(
         # (開啟上傳檔案選單) 已不存在。改點 tools_button（generate 路徑已驗證可開
         # 同一個選單），失敗再退回舊 upload_button。兩段 click 都包在
         # expect_file_chooser 內，由 Playwright 攔截 file dialog。
+        # 2026-07：部分帳號（實測 ct.opui.2025 / ctgemini2026，worker 1 & 3）點完
+        # 「上傳檔案」不會直接跳 file dialog，而是再展開一層子選單（跟「更多上傳
+        # 選項」同源），於是 expect_file_chooser 一路等到逾時、edit 100% 失敗。
+        # 改成兩段：先用短逾時等 file chooser，沒等到就 dump 當下 overlay（留證據）
+        # 並在新選單裡找「從電腦/裝置上傳」這類項目再點一次。
         logger.info("點擊上傳按鈕 + 選單，等 file chooser...")
         try:
-            async with page.expect_file_chooser(timeout=15_000) as fc_info:
+            try:
+                async with page.expect_file_chooser(timeout=6_000) as fc_info:
+                    try:
+                        await page.click(SELECTORS["tools_button"], timeout=8_000)
+                    except Exception:
+                        await page.click(SELECTORS["upload_button"], timeout=5_000)
+                    # 等選單 render（mat-menu Angular 動畫約 200ms）
+                    await asyncio.sleep(0.8)
+                    # debug：dump 選單項目，選擇器再過時時可從 log 直接定位
+                    try:
+                        menu_items = await page.evaluate(_DUMP_MENU_JS)
+                        logger.info("上傳與工具選單: %s", json.dumps(menu_items, ensure_ascii=False)[:400])
+                    except Exception:
+                        pass
+                    await page.click(SELECTORS["upload_menu_item_local"])
+                file_chooser = await fc_info.value
+            except Exception:
+                # 沒跳檔案對話框 → 這個帳號多一層子選單。印出當下 overlay 內容，
+                # 再點裡面的本機上傳項；選擇器又變時，log 就是下一次的線索。
                 try:
-                    await page.click(SELECTORS["tools_button"], timeout=8_000)
+                    submenu = await page.evaluate(_DUMP_MENU_JS)
+                    logger.warning("沒跳 file chooser，當下 overlay: %s",
+                                   json.dumps(submenu, ensure_ascii=False)[:400])
                 except Exception:
-                    await page.click(SELECTORS["upload_button"], timeout=5_000)
-                # 等選單 render（mat-menu Angular 動畫約 200ms）
-                await asyncio.sleep(0.8)
-                # debug：dump 選單項目，選擇器再過時時可從 log 直接定位
-                try:
-                    menu_items = await page.evaluate(_DUMP_MENU_JS)
-                    logger.info("上傳與工具選單: %s", json.dumps(menu_items, ensure_ascii=False)[:400])
-                except Exception:
-                    pass
-                await page.click(SELECTORS["upload_menu_item_local"])
-            file_chooser = await fc_info.value
+                    submenu = []
+                async with page.expect_file_chooser(timeout=9_000) as fc_info:
+                    await page.click(SELECTORS["upload_submenu_item_device"])
+                file_chooser = await fc_info.value
+                logger.info("走子選單拿到 file chooser")
             await file_chooser.set_files(tmp_path)
             logger.info("已 set_files：%s（%d bytes）", tmp_path, len(img_bytes))
         except Exception as e:

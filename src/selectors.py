@@ -78,6 +78,19 @@ SELECTORS = {
         ".cdk-overlay-container button[role='menuitem']:has-text('Upload files')"
     ),
 
+    # 2026-07：有些帳號點「上傳檔案」後不是直接開 file dialog，而是再展開一層
+    # 子選單（從電腦上傳 / 從裝置上傳 / 相簿…）。這條抓子選單裡的本機上傳項；
+    # 排除「雲端硬碟」「相簿」「NotebookLM」那幾個會導去別處的。
+    "upload_submenu_item_device": (
+        ".cdk-overlay-container [role='menuitem']:has-text('從電腦'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('從裝置'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('本機'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('上傳檔案'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('From computer'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('Upload from device'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('Upload files')"
+    ),
+
     # 上傳完成後的縮圖預覽
     # Gemini 上傳預覽圖通常用 blob: URL，掛在 input bar 區域
     "upload_preview_blob": "img[src^='blob:']",

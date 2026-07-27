@@ -582,9 +582,9 @@ def _worker_table(statuses: list[dict[str, Any]], success: dict[int, dict[str, i
     if not rows:
         rows.append("<tr><td colspan='6' class='empty'>No workers.</td></tr>")
     return (
-        "<table><thead><tr><th>ID</th><th>Account</th><th>Alive</th>"
+        "<div class='table-wrap'><table><thead><tr><th>ID</th><th>Account</th><th>Alive</th>"
         "<th>Logged in</th><th>Status</th><th>24h success</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
     )
 
 
@@ -646,12 +646,12 @@ def _keys_table(keys: list[dict[str, Any]], prefix: str) -> str:
             "<tr><td colspan='6' class='empty'>No issued keys yet. Use the form above to create one.</td></tr>"
         )
     return (
-        "<table><thead><tr>"
+        "<div class='table-wrap'><table><thead><tr>"
         "<th title='Admin reference ID — not the bearer key.'>Handle</th>"
         "<th>Name</th><th>Status</th><th>Requests</th>"
         "<th>Last used</th><th>Action</th></tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table>"
+        + "</tbody></table></div>"
     )
 
 
@@ -731,12 +731,12 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
     if not rows:
         rows.append("<tr><td colspan='12' class='empty'>No requests logged yet.</td></tr>")
     return (
-        "<table><thead><tr><th>Kind</th><th>Status</th><th>Key</th><th>Worker</th><th>Via</th><th>Duration</th>"
+        "<div class='table-wrap'><table><thead><tr><th>Kind</th><th>Status</th><th>Key</th><th>Worker</th><th>Via</th><th>Duration</th>"
         "<th>Created</th>"
         f"<th title='Output images are deleted {settings.image_retention_days}d after creation by the sweep'>Expires</th>"
         "<th>Images</th><th>Prompt</th><th>Error</th><th>Action</th></tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table>"
+        + "</tbody></table></div>"
     )
 
 
@@ -968,7 +968,9 @@ _STYLES = """
   }
   .nav-item.active .nav-ico { background: var(--accent-1); color: white; }
 
-  .content { padding: 32px 36px 64px; max-width: 1180px; }
+  /* History 有 12 欄，1180px 塞不下就整片爆出版面。放寬到 1600 並保留在超寬螢幕
+     上不無限拉長的上限；真的還是不夠時由 .table-wrap 接手橫向捲動。 */
+  .content { padding: 32px 36px 64px; max-width: 1600px; }
   .page-head { margin-bottom: 24px; }
   .page-head h2 { font-size: 26px; margin: 0 0 6px; }
   .page-sub { margin: 0; color: var(--muted); font-size: 14.5px; }
@@ -1068,6 +1070,17 @@ _STYLES = """
   tbody tr:hover { background: #f8f9ff; }
   td.actions { white-space: nowrap; }
   td.empty { text-align: center; color: var(--muted); padding: 32px 12px; }
+  /* Dispatch mode 切換器塞在 section 標題列。沒有這段的話會掉進全域的
+     label{display:grid} 與 select{width:100%}，整個表單被擠成一團。 */
+  .mode-form { display: flex; align-items: center; gap: 10px; margin: 0; }
+  .mode-form label { display: flex; align-items: center; gap: 8px; margin: 0; white-space: nowrap; }
+  .mode-form select { width: auto; min-width: 240px; }
+  .mode-form button { padding: 6px 16px; font-size: 12.5px; box-shadow: none; }
+
+  /* 表格一律包一層可橫向捲動的容器：欄位再多也只有表格自己捲，版面不會被撐破 */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table-wrap table { min-width: 100%; }
+
   /* 表格裡的按鈕用小一號的尺寸：沿用全域 pill 會佔掉兩行高，而那一格只有一顆
      按鈕，空的那行純浪費。 */
   td button { padding: 5px 14px; font-size: 12.5px; box-shadow: none; }

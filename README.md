@@ -72,6 +72,11 @@ gemini-web serve --host 0.0.0.0 --port 8070
 
 API 模式自動去水印、自動下載原尺寸圖片。
 
+**金鑰**：只要設過任何一把金鑰（`.env` 的 `API_KEYS` 或 admin webui 現場發的動態 key），
+`/api/chat`、`/api/generate`、`/api/edit` 就都要帶 `x-goog-api-key`，沒帶回 403；一把金鑰都沒設過時維持開放（本機開發）。
+公開反代出去的服務請務必發 key —— 瀏覽器路燒的是登入帳號的**訂閱配額**，不是免費資源。
+建議一個 consumer 發一把（admin → API Keys），History 才分得出哪個專案吃掉多少。
+
 #### POST /api/chat
 
 ```bash
@@ -124,7 +129,7 @@ curl -X POST http://localhost:8070/api/edit \
 
 #### 官方 Gemini API fallback（付費、快、穩）
 
-瀏覽器路是免費但單線、較慢（~40s）且偶爾因 Gemini 改版而脆。可設定「瀏覽器失敗時
+瀏覽器路不另外按張計費（吃的是登入帳號的訂閱配額），但單線、較慢（~40s）且偶爾因 Gemini 改版而脆。可設定「瀏覽器失敗時
 自動頂替」的官方 Gemini Developer API（`generativelanguage`，~10s、按張計費）。適用於
 `/api/edit` 與 `/api/generate`。
 
@@ -279,7 +284,7 @@ if data["success"]:
 | `PORT` | API 服務埠 | `8070` |
 | `DEFAULT_TIMEOUT` | 生圖超時秒數 | `180` |
 | `QUEUE_MAX_SIZE` | 最大排隊數 | `10` |
-| `API_KEYS` | API 金鑰（逗號分隔多組，空 = 不驗證） | 無 |
+| `API_KEYS` | API 金鑰（逗號分隔多組；完全沒設過任何 key 時 `/api/*` 維持開放） | 無 |
 | `GEMINI_OFFICIAL_API_KEY` | 官方 Gemini API key（付費 fallback；未設=不啟用） | 無 |
 | `GEMINI_OFFICIAL_MODEL` | 官方 fallback 影像模型 id | `gemini-3.1-flash-image-preview` |
 | `GEMINI_OFFICIAL_MODE` | `off` / `fallback` / `primary` | `fallback` |

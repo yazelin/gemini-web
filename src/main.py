@@ -64,10 +64,10 @@ def _identify_caller(request: Request | None) -> str:
     name for admin History — "static" for a .env key, the issued name for
     an admin-issued dynamic key, "" if no key was presented at all.
 
-    This is the one choke point all traffic funnels through (gated or not —
-    /api/generate|chat|edit don't require a key), so it's also where a
-    dynamic key's usage stats get bumped; without this, calls through those
-    endpoints would never show up in the Keys page's request counts.
+    This is the one choke point all traffic funnels through, so it's also
+    where a dynamic key's usage stats get bumped; without this, calls
+    through those endpoints would never show up in the Keys page's request
+    counts.
     """
     if request is None:
         return ""
@@ -214,6 +214,7 @@ async def _maybe_official(prompt: str, request: Request, reference_image: str | 
 @app.post("/api/generate")
 async def api_generate(req: GenerateRequest, request: Request, official: int = Query(default=0)):
     """生成圖片"""
+    _verify_api_key(request, None)
     # primary 模式 or ?official=1 → 直接走官方 API，不跑瀏覽器
     if official or settings.gemini_official_mode == "primary":
         r = await _maybe_official(req.prompt, request)
@@ -242,6 +243,7 @@ async def api_generate(req: GenerateRequest, request: Request, official: int = Q
 @app.post("/api/chat")
 async def api_chat(req: ChatRequest, request: Request):
     """文字對話"""
+    _verify_api_key(request, None)
     try:
         result = await _dispatch_and_log("chat", req.prompt, "", req.timeout, request=request)
     except QueueFullError:
@@ -254,6 +256,7 @@ async def api_chat(req: ChatRequest, request: Request):
 @app.post("/api/edit")
 async def api_edit(req: EditRequest, request: Request, official: int = Query(default=0)):
     """以參考圖編輯模式生成圖片"""
+    _verify_api_key(request, None)
     if not req.reference_image:
         raise HTTPException(status_code=400, detail="reference_image 不能為空")
     # primary 模式 or ?official=1 → 直接走官方 API，不跑瀏覽器

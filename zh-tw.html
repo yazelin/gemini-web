@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gemini-web — 把你的 Gemini 訂閱變成可呼叫的自架 API</title>
+<meta name="description" content="用 Playwright 驅動 Gemini 網頁版，對外提供 google-genai 相容的 HTTP API。多個已登入帳號組成 worker pool，讓腳本、機器人與 CI 共用你已經在付的訂閱額度。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23a5b4fc'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-size='34' fill='white' font-family='ui-sans-serif,system-ui'%3E%E2%9D%8B%3C/text%3E%3C/svg%3E">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://yazelin.github.io/gemini-web/zh-tw.html">
+<meta property="og:title" content="gemini-web — 把 Gemini 訂閱變成自架 API">
+<meta property="og:description" content="Playwright 開著登入好的瀏覽器操作 Gemini 網頁版，你的程式只要打 google-genai 相容端點。多帳號 worker pool、管理後台、每個呼叫端一把金鑰。">
+<meta property="og:locale" content="zh_TW">
+<meta property="og:locale:alternate" content="en">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="gemini-web — 把 Gemini 訂閱變成自架 API">
+<meta name="twitter:description" content="Playwright 開著登入好的瀏覽器操作 Gemini 網頁版，你的程式只要打 google-genai 相容端點。多帳號 worker pool、管理後台、每個呼叫端一把金鑰。">
+<style>
+  :root {
+    --ink:        #2d3142;
+    --ink-soft:   #4a5072;
+    --muted:      #7d839b;
+    --bg-1:       #f8f9fd;
+    --bg-2:       #eef2ff;
+    --bg-3:       #fff1f2;
+    --accent-1:   #a5b4fc;   /* periwinkle */
+    --accent-2:   #fda4af;   /* coral */
+    --accent-3:   #86efac;   /* sage */
+    --accent-4:   #fcd34d;   /* warm cream */
+    --card:       #ffffffcc;
+    --card-edge:  #e6e6f2;
+    --code-bg:    #1e2336;
+    --code-ink:   #e9ecf8;
+    --shadow:     0 6px 30px -8px rgba(70,80,140,.18);
+    --radius:     18px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(ellipse 1200px 600px at 10% -10%, var(--bg-2) 0%, transparent 60%),
+      radial-gradient(ellipse 1100px 500px at 95% 5%, var(--bg-3) 0%, transparent 55%),
+      var(--bg-1);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { text-align: center; padding: 48px 0 32px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--card-edge);
+    color: var(--ink-soft); font-size: 13px; font-weight: 500;
+    box-shadow: var(--shadow);
+  }
+  .badge .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent-3);
+    box-shadow: 0 0 0 4px #86efac33;
+  }
+  h1 {
+    margin: 24px 0 12px;
+    font-size: clamp(34px, 6vw, 52px);
+    line-height: 1.05; font-weight: 700;
+    letter-spacing: -0.02em; color: var(--ink);
+  }
+  h1 .accent { color: var(--accent-1); }
+  .tagline {
+    font-size: clamp(17px, 2.2vw, 20px);
+    color: var(--ink-soft); max-width: 660px; margin: 0 auto;
+  }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 28px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 22px; border-radius: 999px;
+    font-weight: 600; font-size: 15px;
+    text-decoration: none; transition: transform .12s ease, box-shadow .12s ease;
+    box-shadow: var(--shadow);
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.primary { background: var(--accent-1); color: white; }
+  .btn.ghost { background: var(--card); color: var(--ink); border: 1px solid var(--card-edge); }
+
+  .card {
+    background: var(--card); backdrop-filter: blur(8px);
+    border: 1px solid var(--card-edge);
+    border-radius: var(--radius);
+    padding: 28px 28px;
+    box-shadow: var(--shadow);
+    margin: 24px 0;
+  }
+  h2 { font-size: 22px; margin: 0 0 14px; letter-spacing: -0.01em; }
+  h2 .num {
+    display: inline-block; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent-1); color: white;
+    text-align: center; line-height: 28px; font-size: 14px;
+    margin-right: 10px;
+  }
+  p { margin: 8px 0; color: var(--ink-soft); }
+  ul { margin: 8px 0 12px 22px; color: var(--ink-soft); }
+  li { margin: 4px 0; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13.5px; }
+  code.inline { background: #eef0ff; color: var(--ink); padding: 2px 6px; border-radius: 6px; }
+  pre {
+    background: var(--code-bg); color: var(--code-ink);
+    padding: 18px 20px; border-radius: 12px;
+    overflow-x: auto; line-height: 1.6;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14.5px; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid #eceaf4; text-align: left; vertical-align: top; color: var(--ink-soft); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: 0; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 6px; }
+  .feature { background: white; border: 1px solid var(--card-edge); border-radius: 14px; padding: 16px 18px; }
+  .feature h3 { margin: 0 0 6px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .feature h3 .ico {
+    width: 28px; height: 28px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 15px;
+  }
+  .ico.a1 { background: #e0e7ff; color: #4f46e5; }
+  .ico.a2 { background: #ffe4e6; color: #be123c; }
+  .ico.a3 { background: #d1fae5; color: #047857; }
+  .ico.a4 { background: #fef3c7; color: #b45309; }
+  .feature p { margin: 0; font-size: 14.5px; }
+
+  .disclaimer { background: #fff8f0; border: 1px dashed #f4c87a; color: #6b4920; }
+  .disclaimer h2 .num { background: #f59e0b; }
+  .disclaimer code.inline { background: #fef3c7; }
+  .disclaimer p, .disclaimer li { color: #6b4920; }
+
+  footer { margin-top: 56px; text-align: center; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--ink-soft); }
+
+  .lang-switch {
+    position: absolute; top: 20px; right: 24px;
+    display: inline-flex; gap: 4px; padding: 4px;
+    background: var(--card); border: 1px solid var(--card-edge);
+    border-radius: 999px; box-shadow: var(--shadow); font-size: 13px;
+  }
+  .lang-switch a, .lang-switch span {
+    padding: 5px 14px; border-radius: 999px;
+    text-decoration: none; color: var(--ink-soft); transition: background .12s ease;
+  }
+  .lang-switch a:hover { background: #eef0ff; }
+  .lang-switch .active { background: var(--accent-1); color: white; }
+</style>
+</head>
+<body>
+<div class="wrap" style="position: relative;">
+
+  <nav class="lang-switch" aria-label="語言切換">
+    <a href="index.html">EN</a>
+    <span class="active">繁中</span>
+  </nav>
+
+  <header>
+    <span class="badge"><span class="dot"></span>Playwright + FastAPI · 僅供個人／開發用途 · MIT</span>
+    <h1>你的 Gemini 訂閱，<br><span class="accent">變成可以呼叫的 API</span></h1>
+    <p class="tagline">
+      Playwright 開著一個已登入的瀏覽器操作真正的 Gemini 網頁版，你的程式只要打一個
+      <code class="inline">google-genai</code> 相容的 HTTP 端點。多掛幾個帳號，它們就成為一組 worker pool。
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/yazelin/gemini-web">前往 GitHub →</a>
+      <a class="btn ghost" href="#install">安裝</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2><span class="num">1</span>為什麼會有這個東西</h2>
+    <p>
+      你已經在付 Gemini 的訂閱費，網頁版整天生圖、回答問題都沒問題。但只要換成排程工作、
+      Cloudflare Worker 或 Telegram 機器人想做同一件事，你就得回頭去買按量計費的 API
+      額度，買的是你早就擁有的能力。
+    </p>
+    <p>
+      這個服務夾在中間：一個無頭瀏覽器維持登入狀態，呼叫端只要講普通的 HTTP。一份登入、
+      多個消費端、不按張計費。輸出的圖會自動去掉可見浮水印，而且是從下載按鈕取原始尺寸，
+      不是抓網頁上那張被縮過的算圖。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">2</span>你會得到什麼</h2>
+    <div class="features">
+      <div class="feature">
+        <h3><span class="ico a1">◇</span>SDK 直接接上</h3>
+        <p><code class="inline">/v1beta/models/{model}:generateContent</code> 走 Google GenAI 的格式，用 <code class="inline">google-genai</code> 的程式只要改 <code class="inline">base_url</code> 就能跑。</p>
+      </div>
+      <div class="feature">
+        <h3><span class="ico a2">◈</span>參考圖編輯</h3>
+        <p><code class="inline">/api/edit</code> 會上傳一張參考圖再回傳編輯後的結果，這是 SDK 相容端點表達不出來的路徑。</p>
+      </div>
+      <div class="feature">
+        <h3><span class="ico a3">❋</span>多帳號並行</h3>
+        <p>每個 worker 是自己的瀏覽器、自己的 Google 帳號。請求輪流分派，沒有哪一個方案會先撞到上限。</p>
+      </div>
+      <div class="feature">
+        <h3><span class="ico a4">◆</span>管理後台</h3>
+        <p>每個呼叫端發一把金鑰、隨時停用，看各 worker 近 24 小時的成功率，手動重跑一筆請求，翻歷史紀錄都不必連進主機。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="install">
+    <h2><span class="num">3</span>安裝</h2>
+    <p>請用 <code class="inline">uv</code> 或 <code class="inline">pipx</code>，直接 <code class="inline">pip install</code> 不會給 Playwright 隔離環境，瀏覽器會裝不起來。</p>
+<pre><code>uv tool install gemini-web
+gemini-web install          # 下載 Playwright 要驅動的 Chromium
+gemini-web login            # 開真的瀏覽器，登入 Google 後按 Enter</code></pre>
+    <p>
+      登入這步需要桌面環境（或透過 SSH 的 X forwarding），因為密碼要你自己輸入。
+      登入狀態存在 <code class="inline">~/.gemini-web/profiles/</code>，之後就一直沿用。
+      要加第二個帳號是 <code class="inline">gemini-web login -w 1</code>，第三個是
+      <code class="inline">-w 2</code>，依此類推。
+    </p>
+<pre><code>gemini-web serve --host 0.0.0.0 --port 8070</code></pre>
+    <p>要常駐的話，<code class="inline">scripts/install-service.sh</code> 裡有現成的 systemd unit。</p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">4</span>怎麼用</h2>
+<pre><code># 文字對話
+curl -X POST http://localhost:8070/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'x-goog-api-key: gmw_&lt;你的金鑰&gt;' \
+  -d '{"prompt": "解釋量子力學"}'
+
+# 文字生圖
+curl -X POST http://localhost:8070/api/generate \
+  -H 'Content-Type: application/json' \
+  -H 'x-goog-api-key: gmw_&lt;你的金鑰&gt;' \
+  -d '{"prompt": "畫一張台北 101 海報"}'
+
+# 參考圖編輯（丟一張照片進去，拿一張改過的圖出來）
+curl -X POST http://localhost:8070/api/edit \
+  -H 'Content-Type: application/json' \
+  -H 'x-goog-api-key: gmw_&lt;你的金鑰&gt;' \
+  -d '{"prompt": "redraw as a 3x3 sticker sheet", "reference_image": "data:image/png;base64,..."}'</code></pre>
+    <p>或是原本的 SDK 程式碼不動，只把位址指過來：</p>
+<pre><code>from google import genai
+
+client = genai.Client(
+    api_key="gmw_&lt;你的金鑰&gt;",
+    http_options={"api_version": "v1beta", "base_url": "http://localhost:8070"},
+)
+print(client.models.generate_content(model="gemini-2.5-flash", contents="Hello").text)</code></pre>
+    <table>
+      <thead><tr><th>端點</th><th>做什麼</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">POST /api/chat</code></td><td>丟文字，回文字。</td></tr>
+        <tr><td><code class="inline">POST /api/generate</code></td><td>文字生圖，回 base64，浮水印已經去掉。</td></tr>
+        <tr><td><code class="inline">POST /api/edit</code></td><td>參考圖加 prompt 生圖。唯一會上傳檔案的端點。</td></tr>
+        <tr><td><code class="inline">POST /v1beta/models/{model}:generateContent</code></td><td>Google GenAI 相容，另有串流版本。</td></tr>
+        <tr><td><code class="inline">GET /api/health</code></td><td>各 worker 的存活、登入、忙碌狀態與排隊深度。不含帳號名稱，因為這支是公開的。</td></tr>
+      </tbody>
+    </table>
+    <p>
+      只要你發過任何一把金鑰，上面每個端點都會要求帶
+      <code class="inline">x-goog-api-key</code>。在第一把金鑰出現之前服務維持開放，
+      本機開發不會被擋，但只要對外可達，第一天就該發金鑰。瀏覽器路燒的是登入帳號的
+      訂閱額度，而且沒有任何每把金鑰的速率限制會救你。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">5</span>多帳號 worker pool</h2>
+    <p>
+      把 <code class="inline">WORKER_COUNT=N</code> 設起來，服務就會開 N 個瀏覽器，各自吃
+      自己的 profile 目錄，也就是各自一個 Google 帳號。每個 worker 一次處理一筆請求，
+      所以 N 同時是你的併行度，也是你分攤用量的額度數。實測每個 worker 大約佔 0.6 到 0.7 GB
+      記憶體。
+    </p>
+    <table>
+      <thead><tr><th>派工模式</th><th>行為</th><th>什麼時候用</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">round-robin</code>（預設）</td><td>每筆請求換下一個 worker。</td><td>想把用量平均攤開，沒有哪個方案會先撞上限。</td></tr>
+        <tr><td><code class="inline">spillover</code></td><td>worker 0 全包，其餘只在它忙碌時才動。</td><td>想把備用帳號留著不動。</td></tr>
+      </tbody>
+    </table>
+    <p>模式是管理後台 Overview 的一個下拉選單，設定存在資料庫裡，重啟後沿用。</p>
+    <p>
+      擴充帳號之前有件事值得先知道：<strong>同一個 Gemini 網頁，在不同帳號長得不一樣</strong>。
+      選單項目會有出入，第一次使用上傳功能的帳號會多跳一個同意條款對話框，生成好的圖有時是
+      blob、有時要按下載鈕。所以「只有某一個 worker 壞掉、其他都好」是正常現象，而且元凶
+      通常不是登入。後台那欄每個 worker 的 24 小時成功率就是為此而存在，讓這件事一眼看得見，
+      而不是被 fallback 蓋過去。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">6</span>後台有什麼</h2>
+    <p><code class="inline">/admin</code>，用密碼加上一個 HMAC 簽章的 session cookie 保護：</p>
+    <ul>
+      <li><strong>Overview</strong>：請求總數、成功、失敗、排隊加執行中、uptime，以及一張 worker 表格：帳號、存活、登入狀態、忙碌與 24 小時成功率。派工模式也在這裡切。</li>
+      <li><strong>API Keys</strong>：為每個呼叫端發一把 <code class="inline">gmw_&lt;token&gt;</code>，可停用或刪除。原始值只顯示一次，伺服器只留 sha256。環境變數 <code class="inline">API_KEYS</code> 裡的金鑰仍然有效，會以唯讀方式列出。</li>
+      <li><strong>Test</strong>：手動跑 generate、edit、chat，含參考圖上傳，讓你不必碰對方的程式就能重現他遇到的失敗。</li>
+      <li><strong>History</strong>：最近 500 筆請求，含用了哪把金鑰、哪個 worker、花了多久、輸出圖連結，以及那些圖幾時會被清掉。prompt 與 error 直接顯示前 90 字，整頁失敗不必逐筆點開才看得懂。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">7</span>選配的付費後路</h2>
+    <p>
+      瀏覽器路是每個帳號單線、一次 30 到 120 秒，而且 Gemini 一改版就可能壞。如果某個
+      呼叫端受不了這種脆弱，設定 <code class="inline">GEMINI_OFFICIAL_API_KEY</code>，服務
+      就能改把請求交給官方 Gemini Developer API：大約 10 秒，按量計費。
+    </p>
+    <ul>
+      <li><code class="inline">GEMINI_OFFICIAL_MODE=off</code>：完全不用。</li>
+      <li><code class="inline">fallback</code>（預設）：只有瀏覽器路失敗後才頂上。</li>
+      <li><code class="inline">primary</code>：一律直接走官方，跳過瀏覽器。</li>
+      <li><code class="inline">?official=1</code> 可以強制單次走官方路。</li>
+    </ul>
+    <p>
+      付費路一律要求有效金鑰，所以開放的端點永遠不會被拿去衝你的帳單。但反過來要留意：
+      在 <code class="inline">fallback</code> 模式下，壞掉的 worker 從外面完全看不出來，
+      呼叫端照樣拿到圖，只是那張圖是按量計費生出來的。後台那欄成功率就是為了看穿這件事。
+    </p>
+  </section>
+
+  <section class="card disclaimer">
+    <h2><span class="num">!</span>免責聲明（僅供個人／實驗用途）</h2>
+    <p>
+      這是為了自己的 homelab 做的東西，<strong>與 Google 無任何隸屬、背書或支援關係</strong>。
+      它用一個真實已登入的瀏覽器 session 自動化消費者版的 Gemini 網頁，那不是 Google
+      文件裡寫過、也不是它認可的使用方式。
+    </p>
+    <ul>
+      <li>自動化消費者帳號的登入，可能違反你當初同意的服務條款。帳號是你的，風險也是你的，包含被停權。</li>
+      <li>Gemini 改版非常頻繁。<code class="inline">src/selectors.py</code> 裡某個選擇器一過期，對應的功能就直接停擺，直到有人去修。</li>
+      <li>沒有 SLA、沒有保固。後台只有一組密碼加簽章 cookie；API 金鑰以 sha256 儲存，控制項只有啟用、停用、刪除，沒有速率限制、沒有配額、沒有權限範圍。</li>
+      <li>每個 worker 都在硬碟上握著一份有效的 Google session。請把那些 profile 目錄當成憑證看待，也別把這套東西指向你不能失去存取權的帳號。</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>MIT 授權 · <a href="https://github.com/yazelin/gemini-web">github.com/yazelin/gemini-web</a></p>
+    <p>由 <a href="https://github.com/yazelin">@yazelin</a> 與 Claude Code 協作打造。</p>
+  </footer>
+
+</div>
+
+</body>
+</html>

@@ -284,6 +284,7 @@ if data["success"]:
 | `PORT` | API 服務埠 | `8070` |
 | `DEFAULT_TIMEOUT` | 生圖超時秒數 | `180` |
 | `QUEUE_MAX_SIZE` | 最大排隊數 | `10` |
+| `WORKER_COUNT` | 併行 worker 數（每個 worker = 一個瀏覽器 + 一個獨立 Google 帳號） | `1` |
 | `API_KEYS` | API 金鑰（逗號分隔多組；完全沒設過任何 key 時 `/api/*` 維持開放） | 無 |
 | `GEMINI_OFFICIAL_API_KEY` | 官方 Gemini API key（付費 fallback；未設=不啟用） | 無 |
 | `GEMINI_OFFICIAL_MODEL` | 官方 fallback 影像模型 id | `gemini-3.1-flash-image-preview` |
@@ -294,6 +295,26 @@ if data["success"]:
 | `ADMIN_URL_PREFIX` | Admin webui 反代路徑前綴（如 `/gemini-web`） | 空 |
 | `GENERATED_DIR` | Admin History 頁落地圖片的目錄（API 回應仍是 base64，不受影響） | `~/.gemini-web/generated` |
 | `IMAGE_RETENTION_DAYS` | 落地圖片保留天數，超過的下次生圖時順便清 | `7` |
+
+## 多帳號 worker pool
+
+`WORKER_COUNT=N` 會開 N 個瀏覽器，各自吃自己的 profile 目錄（`profiles`、`profiles-1`、
+`profiles-2`…），也就是 N 個獨立的 Google 帳號。每個帳號一次處理一個請求，所以併行度就是 N，
+而且用量分散在多個訂閱額度上。
+
+加帳號：`gemini-web login -w <N>`（會開有頭瀏覽器，需要桌面環境或 X forwarding），
+然後把 `WORKER_COUNT` 調大重啟。實測每個 worker 常駐約 0.6–0.7 GB 記憶體。
+
+Admin Overview 可即時切派工模式，設定存在 DB、重啟沿用：
+
+| 模式 | 行為 | 什麼時候用 |
+|---|---|---|
+| `round-robin`（預設） | 每筆請求換下一個 worker | 用量平均攤在各帳號，誰都不會先撞到上限 |
+| `spillover` | 固定用 worker 0，其餘只在它忙碌時才動 | 想把備用帳號留著 |
+
+**同一個 Gemini 網頁在不同帳號會有 UI 變體**（選單項目不同、第一次上傳要先按同意條款、
+出圖是 blob 還是下載鈕）。所以「只有某一個 worker 壞掉」是正常現象，不要先懷疑登入 ——
+Overview 的 24 小時成功率就是為了讓這件事一眼看得出來。
 
 ## Admin webui
 
@@ -316,7 +337,7 @@ uv run pytest -v
 
 ## 已知限制
 
-- 一次只能處理一個請求（生圖或對話，其他排隊等待）
+- 併行度 = `WORKER_COUNT`（每個 worker 一次一個請求，其餘排隊）；單帳號時就是一次一件
 - Google 登入過期需手動重新登入（`gemini-web login`）
 - Gemini 改版可能導致 DOM selector 失效，需更新 `src/selectors.py`
 - **同一個 Gemini 網頁在不同帳號會有 UI 變體**（選單多寡、上傳是否多一層子選單、

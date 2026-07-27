@@ -716,3 +716,16 @@ def test_tables_are_wrapped_for_horizontal_scroll():
     ):
         assert html_out.startswith("<div class='table-wrap'>")
         assert html_out.endswith("</table></div>")
+
+
+def test_mode_form_has_its_own_css():
+    """.mode-form 一定要有自己的排版規則。
+
+    沒有的話它會掉進全域的 label{display:grid} 和 select{width:100%}，
+    整個切換器被擠成一團塞在標題列右邊（2026-07-27 實際發生過）。
+    """
+    from src.admin import _STYLES
+
+    assert ".mode-form {" in _STYLES
+    assert ".mode-form select" in _STYLES  # 覆蓋 select{width:100%}
+    assert ".mode-form label" in _STYLES   # 覆蓋 label{display:grid}

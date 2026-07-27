@@ -1070,6 +1070,13 @@ _STYLES = """
   tbody tr:hover { background: #f8f9ff; }
   td.actions { white-space: nowrap; }
   td.empty { text-align: center; color: var(--muted); padding: 32px 12px; }
+  /* Dispatch mode 切換器塞在 section 標題列。沒有這段的話會掉進全域的
+     label{display:grid} 與 select{width:100%}，整個表單被擠成一團。 */
+  .mode-form { display: flex; align-items: center; gap: 10px; margin: 0; }
+  .mode-form label { display: flex; align-items: center; gap: 8px; margin: 0; white-space: nowrap; }
+  .mode-form select { width: auto; min-width: 240px; }
+  .mode-form button { padding: 6px 16px; font-size: 12.5px; box-shadow: none; }
+
   /* 表格一律包一層可橫向捲動的容器：欄位再多也只有表格自己捲，版面不會被撐破 */
   .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .table-wrap table { min-width: 100%; }

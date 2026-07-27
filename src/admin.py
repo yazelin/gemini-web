@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import base64
 import html
+import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -514,6 +515,14 @@ def _relative_time(iso: str | None) -> str:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     delta = (now - ts).total_seconds()
+    if delta < 0:  # 未來（例如圖片到期時間）
+        # 無條件進位：剩 2.9 天講「in 2d」會讓人以為明天就被掃掉。
+        ahead = -delta
+        if ahead < 3600:
+            return f"in {math.ceil(ahead / 60)}m"
+        if ahead < 86400:
+            return f"in {math.ceil(ahead / 3600)}h"
+        return f"in {math.ceil(ahead / 86400)}d"
     if delta < 60:
         return f"{int(delta)}s ago"
     if delta < 3600:
@@ -677,6 +686,22 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
             f"<a href='{prefix}/generated/{html.escape(Path(p).name)}' target='_blank'>image</a>"
             for p in (item.get("image_paths") or [])
         ]
+        # 落地圖片會在生圖時被順手掃掉（image_store.sweep_old），到期時間就是
+        # created_at + IMAGE_RETENTION_DAYS。沒有圖的那幾筆沒東西可過期。
+        expires_str = "—"
+        if links:
+            try:
+                created = datetime.fromisoformat(item["created_at"].replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                expiry = created + timedelta(days=settings.image_retention_days)
+                expires_str = (
+                    _relative_time(expiry.isoformat())
+                    if expiry > datetime.now(timezone.utc)
+                    else "<span class='muted'>swept</span>"
+                )
+            except (ValueError, KeyError):
+                expires_str = "—"
         delete_form = (
             f"<form method='post' action='{prefix}/admin/requests/{html.escape(item['id'])}/delete' style='display:inline'"
             " onsubmit=\"return confirm('Delete this history row and its image(s)?');\">"
@@ -691,6 +716,7 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
             f"<td>{html.escape(item.get('via') or '—')}</td>"
             f"<td>{duration_str}</td>"
             f"<td>{_relative_time(item['created_at'])}</td>"
+            f"<td title='Images are swept {settings.image_retention_days}d after creation, on the next generate'>{expires_str}</td>"
             f"<td>{', '.join(links) or '—'}</td>"
             f"<td class='cell-peek'><details><summary>{html.escape(_peek(item['prompt'])) or 'Prompt'}</summary>"
             f"<pre>{html.escape(item['prompt'])}</pre></details></td>"
@@ -703,10 +729,12 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
             "</tr>"
         )
     if not rows:
-        rows.append("<tr><td colspan='11' class='empty'>No requests logged yet.</td></tr>")
+        rows.append("<tr><td colspan='12' class='empty'>No requests logged yet.</td></tr>")
     return (
         "<table><thead><tr><th>Kind</th><th>Status</th><th>Key</th><th>Worker</th><th>Via</th><th>Duration</th>"
-        "<th>Created</th><th>Images</th><th>Prompt</th><th>Error</th><th>Action</th></tr></thead><tbody>"
+        "<th>Created</th>"
+        f"<th title='Output images are deleted {settings.image_retention_days}d after creation by the sweep'>Expires</th>"
+        "<th>Images</th><th>Prompt</th><th>Error</th><th>Action</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"
     )

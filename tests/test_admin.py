@@ -687,3 +687,19 @@ def test_worker_success_cell_renders():
     assert "chip-fail" in _success_cell({"succeeded": 0, "failed": 5})  # 全滅要紅的
     assert "no traffic" in _success_cell({"succeeded": 0, "failed": 0})
     assert "no traffic" in _success_cell(None)
+
+
+def test_relative_time_handles_future():
+    """History 的 Expires 欄是未來時間，不能被講成「幾天前」。"""
+    from datetime import datetime, timedelta, timezone
+
+    from src.admin import _relative_time
+
+    future = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+    assert _relative_time(future) == "in 3d"
+
+    soon = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+    assert _relative_time(soon) == "in 5h"
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    assert past and _relative_time(past).endswith("ago")

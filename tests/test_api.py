@@ -3,6 +3,8 @@ import pytest
 from unittest.mock import AsyncMock, patch, PropertyMock
 from httpx import AsyncClient, ASGITransport
 
+from src.config import settings
+
 
 @pytest.fixture(autouse=True)
 def mock_worker_pool():
@@ -74,3 +76,27 @@ async def test_generate_success(mock_worker_pool):
     data = resp.json()
     assert data["success"] is True
     assert len(data["images"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,payload", [
+    ("/api/generate", {"prompt": "test"}),
+    ("/api/chat", {"prompt": "test"}),
+    ("/api/edit", {"prompt": "test", "reference_image": "data:image/png;base64,abc"}),
+])
+async def test_browser_endpoints_require_key(mock_worker_pool, monkeypatch, path, payload):
+    """設過 key 之後，瀏覽器路的三個端點沒帶 key 就要 403（免得公開網址被拿去
+    燒訂閱配額），帶對的 key 照舊放行。"""
+    monkeypatch.setattr(settings, "api_keys", ["secret"])
+    mock_worker_pool.dispatch = AsyncMock(return_value={
+        "success": True,
+        "images": ["data:image/png;base64,abc"],
+        "prompt": "test",
+        "elapsed_seconds": 1.0,
+    })
+    from src.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.post(path, json=payload)).status_code == 403
+        ok = await client.post(path, json=payload, headers={"x-goog-api-key": "secret"})
+    assert ok.status_code == 200

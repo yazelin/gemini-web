@@ -729,3 +729,15 @@ def test_mode_form_has_its_own_css():
     assert ".mode-form {" in _STYLES
     assert ".mode-form select" in _STYLES  # 覆蓋 select{width:100%}
     assert ".mode-form label" in _STYLES   # 覆蓋 label{display:grid}
+
+
+def test_stats_row_is_not_hardcoded_to_four():
+    """Overview 現在有 5 格（含 Queued/running 與 Uptime）。
+
+    寫死 repeat(4,…) 會把第 5 格擠到下一行獨佔整排；auto-fit 才會隨容器寬度
+    與格子數自己排。
+    """
+    from src.admin import _STYLES
+
+    assert "repeat(auto-fit, minmax(180px, 1fr))" in _STYLES
+    assert "repeat(4, minmax(0, 1fr))" not in _STYLES

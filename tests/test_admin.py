@@ -655,3 +655,35 @@ def test_static_files_dir_must_exist_before_first_request(tmp_path):
 
     missing_dir.mkdir(parents=True, exist_ok=True)  # main.py does this before mounting
     assert client.get("/generated/nonexistent.png").status_code == 404
+
+
+def test_worker_success_24h(temp_admin_db):
+    """Overview 的『24h success』欄：分 worker 統計，沒流量的 worker 不出現。
+
+    這張表存在的理由：付費 fallback 會把單一 worker 的失敗補起來（API 照樣回
+    200），所以服務「看起來正常」不代表每個帳號都在幹活 —— 只有這裡看得到。
+    """
+    for _ in range(3):
+        temp_admin_db.record(kind="edit", prompt="x", status="succeeded", worker_id=0)
+    temp_admin_db.record(kind="edit", prompt="x", status="failed", worker_id=1)
+    temp_admin_db.record(kind="edit", prompt="x", status="succeeded", worker_id=1)
+    temp_admin_db.record(kind="chat", prompt="x", status="succeeded")  # 沒帶 worker_id
+
+    got = temp_admin_db.worker_success(24)
+    assert got == {
+        0: {"succeeded": 3, "failed": 0},
+        1: {"succeeded": 1, "failed": 1},
+    }
+    assert 2 not in got  # 沒跑過的 worker 不會憑空出現
+
+
+def test_worker_success_cell_renders():
+    """0/0 要顯示 no traffic，不能算成 0% 誤報為掛掉。"""
+    from src.admin import _success_cell
+
+    assert "100%" in _success_cell({"succeeded": 4, "failed": 0})
+    assert "50%" in _success_cell({"succeeded": 1, "failed": 1})
+    assert "0%" in _success_cell({"succeeded": 0, "failed": 5})
+    assert "chip-fail" in _success_cell({"succeeded": 0, "failed": 5})  # 全滅要紅的
+    assert "no traffic" in _success_cell({"succeeded": 0, "failed": 0})
+    assert "no traffic" in _success_cell(None)

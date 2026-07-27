@@ -220,6 +220,28 @@ def has_any_dynamic_key() -> bool:
         return conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone() is not None
 
 
+def worker_success(hours: int = 24) -> dict[int, dict[str, int]]:
+    """近 N 小時各 worker 的成功／失敗筆數。
+
+    帳號別的 Gemini UI 變體會讓單一 worker 整條掛掉（例：第一次上傳要按同意
+    條款），但付費 fallback 會把破洞補起來，API 回應照樣 200 —— 光看服務有沒有
+    回應是看不出來的，要看這張表。
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT worker_id, status, COUNT(*) FROM requests "
+            "WHERE worker_id IS NOT NULL "
+            f"  AND created_at >= datetime('now', '-{int(hours)} hours') "
+            "GROUP BY worker_id, status"
+        ).fetchall()
+    out: dict[int, dict[str, int]] = {}
+    for worker_id, status, count in rows:
+        bucket = out.setdefault(int(worker_id), {"succeeded": 0, "failed": 0})
+        if status in bucket:
+            bucket[status] += int(count)
+    return out
+
+
 def stats() -> dict[str, int]:
     with _connect() as conn:
         total = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]

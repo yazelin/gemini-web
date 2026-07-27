@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gemini-web — your Gemini subscription as a self-hosted image + chat API</title>
+<meta name="description" content="A Playwright-driven wrapper around the Gemini web app, re-exposed as a google-genai compatible HTTP API. Run several logged-in accounts as a worker pool so your scripts, bots and CI share the subscription quota you already pay for.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23a5b4fc'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-size='34' fill='white' font-family='ui-sans-serif,system-ui'%3E%E2%9D%8B%3C/text%3E%3C/svg%3E">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://yazelin.github.io/gemini-web/">
+<meta property="og:title" content="gemini-web — your Gemini subscription as a self-hosted API">
+<meta property="og:description" content="Playwright drives the Gemini web app; your scripts talk to a google-genai compatible endpoint. Multi-account worker pool, admin UI, per-caller API keys.">
+<meta property="og:locale" content="en">
+<meta property="og:locale:alternate" content="zh_TW">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="gemini-web — your Gemini subscription as a self-hosted API">
+<meta name="twitter:description" content="Playwright drives the Gemini web app; your scripts talk to a google-genai compatible endpoint. Multi-account worker pool, admin UI, per-caller API keys.">
+<style>
+  :root {
+    --ink:        #2d3142;
+    --ink-soft:   #4a5072;
+    --muted:      #7d839b;
+    --bg-1:       #f8f9fd;
+    --bg-2:       #eef2ff;
+    --bg-3:       #fff1f2;
+    --accent-1:   #a5b4fc;   /* periwinkle */
+    --accent-2:   #fda4af;   /* coral */
+    --accent-3:   #86efac;   /* sage */
+    --accent-4:   #fcd34d;   /* warm cream */
+    --card:       #ffffffcc;
+    --card-edge:  #e6e6f2;
+    --code-bg:    #1e2336;
+    --code-ink:   #e9ecf8;
+    --shadow:     0 6px 30px -8px rgba(70,80,140,.18);
+    --radius:     18px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(ellipse 1200px 600px at 10% -10%, var(--bg-2) 0%, transparent 60%),
+      radial-gradient(ellipse 1100px 500px at 95% 5%, var(--bg-3) 0%, transparent 55%),
+      var(--bg-1);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { text-align: center; padding: 48px 0 32px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--card-edge);
+    color: var(--ink-soft); font-size: 13px; font-weight: 500;
+    box-shadow: var(--shadow);
+  }
+  .badge .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent-3);
+    box-shadow: 0 0 0 4px #86efac33;
+  }
+  h1 {
+    margin: 24px 0 12px;
+    font-size: clamp(34px, 6vw, 52px);
+    line-height: 1.05; font-weight: 700;
+    letter-spacing: -0.02em; color: var(--ink);
+  }
+  h1 .accent { color: var(--accent-1); }
+  .tagline {
+    font-size: clamp(17px, 2.2vw, 20px);
+    color: var(--ink-soft); max-width: 660px; margin: 0 auto;
+  }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 28px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 22px; border-radius: 999px;
+    font-weight: 600; font-size: 15px;
+    text-decoration: none; transition: transform .12s ease, box-shadow .12s ease;
+    box-shadow: var(--shadow);
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.primary { background: var(--accent-1); color: white; }
+  .btn.ghost { background: var(--card); color: var(--ink); border: 1px solid var(--card-edge); }
+
+  .card {
+    background: var(--card); backdrop-filter: blur(8px);
+    border: 1px solid var(--card-edge);
+    border-radius: var(--radius);
+    padding: 28px 28px;
+    box-shadow: var(--shadow);
+    margin: 24px 0;
+  }
+  h2 { font-size: 22px; margin: 0 0 14px; letter-spacing: -0.01em; }
+  h2 .num {
+    display: inline-block; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent-1); color: white;
+    text-align: center; line-height: 28px; font-size: 14px;
+    margin-right: 10px;
+  }
+  p { margin: 8px 0; color: var(--ink-soft); }
+  ul { margin: 8px 0 12px 22px; color: var(--ink-soft); }
+  li { margin: 4px 0; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13.5px; }
+  code.inline { background: #eef0ff; color: var(--ink); padding: 2px 6px; border-radius: 6px; }
+  pre {
+    background: var(--code-bg); color: var(--code-ink);
+    padding: 18px 20px; border-radius: 12px;
+    overflow-x: auto; line-height: 1.6;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14.5px; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid #eceaf4; text-align: left; vertical-align: top; color: var(--ink-soft); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: 0; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 6px; }
+  .feature { background: white; border: 1px solid var(--card-edge); border-radius: 14px; padding: 16px 18px; }
+  .feature h3 { margin: 0 0 6px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .feature h3 .ico {
+    width: 28px; height: 28px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 15px;
+  }
+  .ico.a1 { background: #e0e7ff; color: #4f46e5; }
+  .ico.a2 { background: #ffe4e6; color: #be123c; }
+  .ico.a3 { background: #d1fae5; color: #047857; }
+  .ico.a4 { background: #fef3c7; color: #b45309; }
+  .feature p { margin: 0; font-size: 14.5px; }
+
+  .disclaimer { background: #fff8f0; border: 1px dashed #f4c87a; color: #6b4920; }
+  .disclaimer h2 .num { background: #f59e0b; }
+  .disclaimer code.inline { background: #fef3c7; }
+  .disclaimer p, .disclaimer li { color: #6b4920; }
+
+  footer { margin-top: 56px; text-align: center; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--ink-soft); }
+
+  .lang-switch {
+    position: absolute; top: 20px; right: 24px;
+    display: inline-flex; gap: 4px; padding: 4px;
+    background: var(--card); border: 1px solid var(--card-edge);
+    border-radius: 999px; box-shadow: var(--shadow); font-size: 13px;
+  }
+  .lang-switch a, .lang-switch span {
+    padding: 5px 14px; border-radius: 999px;
+    text-decoration: none; color: var(--ink-soft); transition: background .12s ease;
+  }
+  .lang-switch a:hover { background: #eef0ff; }
+  .lang-switch .active { background: var(--accent-1); color: white; }
+</style>
+</head>
+<body>
+
+<div class="wrap" style="position: relative;">
+
+  <nav class="lang-switch" aria-label="Language switcher">
+    <span class="active">EN</span>
+    <a href="zh-tw.html">繁中</a>
+  </nav>
+
+  <header>
+    <span class="badge"><span class="dot"></span>Playwright + FastAPI · personal/dev use only · MIT</span>
+    <h1>your Gemini subscription,<br><span class="accent">as an API you can call</span></h1>
+    <p class="tagline">
+      Playwright drives the real Gemini web app in a logged-in browser; your
+      scripts talk to a small <code class="inline">google-genai</code> compatible
+      HTTP endpoint. Point several accounts at it and they become a worker pool.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/yazelin/gemini-web">View on GitHub →</a>
+      <a class="btn ghost" href="#install">Install</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2><span class="num">1</span>Why this exists</h2>
+    <p>
+      You already pay for a Gemini plan, and the web app will happily generate
+      images and answer prompts all day. But the moment a cron job, a Cloudflare
+      Worker, or a Telegram bot wants the same thing, you are back to buying
+      metered API credits for capability you already own.
+    </p>
+    <p>
+      This service sits in between: a headless browser stays logged in, and your
+      callers speak plain HTTP. One login, many consumers, no per-image billing.
+      Output images get their visible watermark removed automatically, and the
+      full-resolution file is pulled from the download button rather than the
+      scaled-down page render.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">2</span>What you get</h2>
+    <div class="features">
+      <div class="feature">
+        <h3><span class="ico a1">◇</span>Drop-in SDK compatibility</h3>
+        <p><code class="inline">/v1beta/models/{model}:generateContent</code> speaks the Google GenAI wire format, so <code class="inline">google-genai</code> works by changing only <code class="inline">base_url</code>.</p>
+      </div>
+      <div class="feature">
+        <h3><span class="ico a2">◈</span>Reference-image editing</h3>
+        <p><code class="inline">/api/edit</code> uploads a reference image and returns the edited result — the path the SDK-compatible endpoint cannot express.</p>
+      </div>
+      <div class="feature">
+        <h3><span class="ico a3">❋</span>Multi-account pool</h3>
+        <p>Each worker is its own browser and its own Google account. Requests round-robin across them, so no single plan hits its cap first.</p>
+      </div>
+      <div class="feature">
+        <h3><span class="ico a4">◆</span>Admin UI</h3>
+        <p>Issue and revoke a key per caller, watch each worker's 24 h success rate, replay a request, and read the history without SSHing anywhere.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="install">
+    <h2><span class="num">3</span>Install</h2>
+    <p>Use <code class="inline">uv</code> or <code class="inline">pipx</code> — a plain <code class="inline">pip install</code> gives Playwright no isolated environment and the browser download fails.</p>
+<pre><code>uv tool install gemini-web
+gemini-web install          # downloads the Chromium build Playwright drives
+gemini-web login            # opens a real browser; sign in to Google, press Enter</code></pre>
+    <p>
+      The login step needs a desktop session (or X forwarding over SSH) because
+      you type the password yourself. Session state lands in
+      <code class="inline">~/.gemini-web/profiles/</code> and is reused from then
+      on. Adding a second account is <code class="inline">gemini-web login -w 1</code>,
+      a third is <code class="inline">-w 2</code>, and so on.
+    </p>
+<pre><code>gemini-web serve --host 0.0.0.0 --port 8070</code></pre>
+    <p>There is a systemd unit in <code class="inline">scripts/install-service.sh</code> for the always-on case.</p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">4</span>Use</h2>
+<pre><code># chat
+curl -X POST http://localhost:8070/api/chat \
+  -H 'Content-Type: application/json' \
+  -H 'x-goog-api-key: gmw_&lt;your-key&gt;' \
+  -d '{"prompt": "explain quantum mechanics"}'
+
+# text to image
+curl -X POST http://localhost:8070/api/generate \
+  -H 'Content-Type: application/json' \
+  -H 'x-goog-api-key: gmw_&lt;your-key&gt;' \
+  -d '{"prompt": "a poster of Taipei 101"}'
+
+# image to image (reference photo in, edited image out)
+curl -X POST http://localhost:8070/api/edit \
+  -H 'Content-Type: application/json' \
+  -H 'x-goog-api-key: gmw_&lt;your-key&gt;' \
+  -d '{"prompt": "redraw as a 3x3 sticker sheet", "reference_image": "data:image/png;base64,..."}'</code></pre>
+    <p>Or keep your existing SDK code and repoint it:</p>
+<pre><code>from google import genai
+
+client = genai.Client(
+    api_key="gmw_&lt;your-key&gt;",
+    http_options={"api_version": "v1beta", "base_url": "http://localhost:8070"},
+)
+print(client.models.generate_content(model="gemini-2.5-flash", contents="Hello").text)</code></pre>
+    <table>
+      <thead><tr><th>Endpoint</th><th>Does</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">POST /api/chat</code></td><td>Text in, text out.</td></tr>
+        <tr><td><code class="inline">POST /api/generate</code></td><td>Text to image; returns base64, watermark already removed.</td></tr>
+        <tr><td><code class="inline">POST /api/edit</code></td><td>Reference image + prompt to image. The only endpoint that uploads a file.</td></tr>
+        <tr><td><code class="inline">POST /v1beta/models/{model}:generateContent</code></td><td>Google GenAI compatible; also has the streaming variant.</td></tr>
+        <tr><td><code class="inline">GET /api/health</code></td><td>Per-worker alive / logged-in / busy plus queue depth. No account names — it is public.</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Once you have issued a single key, every endpoint above requires
+      <code class="inline">x-goog-api-key</code>. Before that first key exists the
+      service stays open, so local development is not blocked — but anything
+      reachable from the internet should have a key from day one. The browser path
+      spends the subscription quota of whichever account is logged in, and there is
+      no per-key rate limit to save you.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">5</span>Multi-account worker pool</h2>
+    <p>
+      Set <code class="inline">WORKER_COUNT=N</code> and the service starts N
+      browsers, each on its own profile directory and therefore its own Google
+      account. Every worker handles one request at a time, so N is both your
+      concurrency and the number of quotas you are spreading load across.
+      Measured cost is roughly 0.6–0.7 GB of RAM per worker.
+    </p>
+    <table>
+      <thead><tr><th>Dispatch mode</th><th>Behaviour</th><th>Use when</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">round-robin</code> (default)</td><td>Every request advances to the next worker.</td><td>You want usage spread evenly so no single plan hits its cap first.</td></tr>
+        <tr><td><code class="inline">spillover</code></td><td>Worker 0 takes everything; the others only wake when it is busy.</td><td>You want the backup accounts left alone.</td></tr>
+      </tbody>
+    </table>
+    <p>
+      The mode is a dropdown in the admin Overview, stored in the database and
+      kept across restarts.
+    </p>
+    <p>
+      One thing worth knowing before you scale up: <strong>the same Gemini web app
+      looks different to different accounts</strong>. Menu entries vary, an account
+      using upload for the first time gets an extra consent dialog, and finished
+      images arrive either as a blob or behind a download button. So "one worker
+      is broken while the rest are fine" is normal, and login is usually not the
+      culprit. The per-worker 24 h success rate in the admin exists precisely so
+      that this is visible at a glance instead of hiding behind a fallback.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">6</span>What is in the admin</h2>
+    <p><code class="inline">/admin</code>, behind a password and an HMAC session cookie:</p>
+    <ul>
+      <li><strong>Overview</strong> — requests, succeeded, failed, queued plus running, uptime, and a table of workers with account, alive, logged-in, busy and 24 h success rate. Dispatch mode switches here.</li>
+      <li><strong>API Keys</strong> — issue <code class="inline">gmw_&lt;token&gt;</code> keys per caller, disable or delete them. The raw value is shown once; the server keeps a sha256 hash. Keys from <code class="inline">API_KEYS</code> in the environment still work and are listed read-only.</li>
+      <li><strong>Test</strong> — run generate, edit or chat by hand, reference image upload included, so you can reproduce a caller's failure without touching their code.</li>
+      <li><strong>History</strong> — the last 500 requests with the key, the worker, the duration, links to output images, and when those images get swept. Prompt and error show their first 90 characters inline, so a page of failures is readable without opening every row.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">7</span>Optional paid fallback</h2>
+    <p>
+      The browser path is single-threaded per account, takes 30–120 s, and breaks
+      whenever Gemini reshuffles its UI. If that is too fragile for a given
+      caller, set <code class="inline">GEMINI_OFFICIAL_API_KEY</code> and the
+      service can hand the request to the official Gemini Developer API instead:
+      about 10 s, and metered.
+    </p>
+    <ul>
+      <li><code class="inline">GEMINI_OFFICIAL_MODE=off</code> — never.</li>
+      <li><code class="inline">fallback</code> (default) — only after the browser path fails.</li>
+      <li><code class="inline">primary</code> — always, skipping the browser entirely.</li>
+      <li><code class="inline">?official=1</code> forces it for a single call.</li>
+    </ul>
+    <p>
+      The paid path always requires a valid key, so an open endpoint can never be
+      used to run up your bill. Do watch the flip side: in
+      <code class="inline">fallback</code> mode a broken worker is invisible from
+      outside — callers still get their image, just off the metered API. That is
+      what the success-rate column in the admin is for.
+    </p>
+  </section>
+
+  <section class="card disclaimer">
+    <h2><span class="num">!</span>Disclaimer — personal / experimental use only</h2>
+    <p>
+      This was built for a private homelab. It is <strong>not affiliated with,
+      endorsed by, or supported by Google</strong>. It automates the consumer
+      Gemini web app with a real logged-in browser session, which is not a usage
+      pattern Google documents or blesses.
+    </p>
+    <ul>
+      <li>Automating a consumer login may breach the terms of service you agreed to. Your account, your risk — including suspension.</li>
+      <li>Gemini ships UI changes constantly. When a selector in <code class="inline">src/selectors.py</code> goes stale, the affected path simply stops working until it is patched.</li>
+      <li>No SLA, no warranty. The admin is one password plus a signed cookie; API keys are stored as sha256 hashes with enable, disable and delete as the only controls — no rate limits, no quotas, no per-key scoping.</li>
+      <li>Every browser worker holds a live Google session on disk. Treat the profile directories as credentials, and do not point this at anything you would mind losing access to.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>MIT licensed · <a href="https://github.com/yazelin/gemini-web">github.com/yazelin/gemini-web</a></p>
+    <p>Built collaboratively by <a href="https://github.com/yazelin">@yazelin</a> + Claude Code.</p>
+  </footer>
+
+</div>
+
+</body>
+</html>

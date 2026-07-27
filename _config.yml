@@ -1,0 +1,16 @@
+# 讓 GitHub Pages 直接吐我們手寫的 index.html / zh-tw.html，
+# 不然它會拿 Jekyll 主題去 render README.md，landing page 就被蓋掉了。
+plugins: []
+exclude:
+  - README.md
+  - AGENTS.md
+  - CLAUDE.md
+  - GEMINI.md
+  - pyproject.toml
+  - uv.lock
+  - src
+  - tests
+  - scripts
+  - docs
+  - dist
+  - profiles

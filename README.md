@@ -297,7 +297,7 @@ if data["success"]:
 
 ## Admin webui
 
-`/admin`（比照 [codex-image-service](https://github.com/yazelin/codex-image-service) 同一套操作習慣）：登入（含 remember-me）、Overview（worker 健康度/近期活動）、API Keys（現場發放/停用/刪除動態 key，`.env` 的 `API_KEYS` 仍有效、唯讀顯示）、Test（手動測 generate/edit/chat，含參考圖上傳）、History（近 500 筆請求，含哪把 key、哪個 worker、輸出圖連結）。
+`/admin`（比照 [codex-image-service](https://github.com/yazelin/codex-image-service) 同一套操作習慣）：登入（含 remember-me）、Overview（worker 健康度／**近 24 小時各 worker 成功率**／近期活動）、API Keys（現場發放/停用/刪除動態 key，`.env` 的 `API_KEYS` 仍有效、唯讀顯示）、Test（手動測 generate/edit/chat，含參考圖上傳）、History（近 500 筆請求，含哪把 key、哪個 worker、輸出圖連結）。
 
 ## 從原始碼安裝
 

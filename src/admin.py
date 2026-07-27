@@ -339,7 +339,7 @@ async def _overview_page(request: Request) -> str:
           <h2>Workers</h2>
           {_dispatch_mode_form(prefix, mode)}
         </div>
-        {_worker_table(worker_statuses)}
+        {_worker_table(worker_statuses, admin_db.worker_success(24))}
       </section>
       <section>
         <div class="section-title">
@@ -537,7 +537,23 @@ def _dispatch_mode_form(prefix: str, current: str) -> str:
     )
 
 
-def _worker_table(statuses: list[dict[str, Any]]) -> str:
+def _success_cell(counts: dict[str, int] | None) -> str:
+    """近 24h 成功率。沒流量就留白（0/0 不是 0%，別誤報成掛掉）。"""
+    if not counts:
+        return "<span class='chip chip-mute'>no traffic</span>"
+    ok, bad = counts.get("succeeded", 0), counts.get("failed", 0)
+    total = ok + bad
+    if total == 0:
+        return "<span class='chip chip-mute'>no traffic</span>"
+    rate = round(100 * ok / total)
+    # 全綠 100%、有失敗但還在跑 = 警示、全滅 = 紅。全滅通常代表這個帳號撞到
+    # 只有它會遇到的 UI 變體，不是服務掛了（服務會被付費 fallback 蓋過去）。
+    cls = "chip-ok" if rate == 100 else ("chip-fail" if ok == 0 else "chip-run")
+    return f"<span class='chip {cls}'>{rate}%</span> <span class='muted'>{ok}/{total}</span>"
+
+
+def _worker_table(statuses: list[dict[str, Any]], success: dict[int, dict[str, int]] | None = None) -> str:
+    success = success or {}
     rows = []
     for s in statuses:
         alive = "<span class='chip chip-ok'>alive</span>" if s["alive"] else "<span class='chip chip-fail'>down</span>"
@@ -546,13 +562,14 @@ def _worker_table(statuses: list[dict[str, Any]]) -> str:
         account = html.escape(s.get("account") or "—")
         rows.append(
             f"<tr><td>{s['id']}</td><td>{account}</td><td>{alive}</td>"
-            f"<td>{logged_in}</td><td>{busy}</td></tr>"
+            f"<td>{logged_in}</td><td>{busy}</td>"
+            f"<td>{_success_cell(success.get(s['id']))}</td></tr>"
         )
     if not rows:
-        rows.append("<tr><td colspan='5' class='empty'>No workers.</td></tr>")
+        rows.append("<tr><td colspan='6' class='empty'>No workers.</td></tr>")
     return (
         "<table><thead><tr><th>ID</th><th>Account</th><th>Alive</th>"
-        "<th>Logged in</th><th>Status</th></tr></thead>"
+        "<th>Logged in</th><th>Status</th><th>24h success</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 

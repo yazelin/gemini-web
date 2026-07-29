@@ -825,8 +825,12 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
             return _error("no_response", "Gemini 未回應", elapsed)
 
         # 等回應完成。三個結束條件,任一觸發就跳出:
-        #   (a) 文字連續 2 次不變且 stop generating 按鈕已消失 = 真正完成
-        #   (b) 文字連續 4 次不變 (即使 stop button 還在) = 也視為完成 (按鈕可能延遲消失)
+        #   (a) 文字連續 2 次不變且 stop generating 按鈕已消失,再過 2 秒複核一次
+        #       仍沒變長 = 真正完成。複核是因為長回應(尤其 JSON/code block)在
+        #       生成中會「凍結在開頭片段」直到整塊渲染,按鈕 selector 又可能因
+        #       UI 改版失效——沒有複核時長回應約 50% 被截斷成開頭幾個字元。
+        #   (b) 文字連續 20 次不變 (即使 stop button 還在) = 最後保險
+        #       (原本 4 秒:code block 渲染停頓超過 4 秒就被誤判完成而截斷)
         #   (c) 跑滿 90 秒上限 = 強制跳出
         # 90 秒是給 Pro 模式留的 buffer (Pro stream 通常 20-40 秒,Flash 5-15 秒)
         prev_text = ""
@@ -839,13 +843,22 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
             text = (await response_els[-1].inner_text()).strip()
             if text and text == prev_text:
                 stable_count += 1
-                # 條件 (a): stable + stop 按鈕消失
+                # 條件 (a): stable + stop 按鈕消失 + 2 秒複核未再變長
                 if stable_count >= 2:
                     stop_btn = await page.query_selector(SELECTORS["stop_generating"])
                     if not stop_btn:
+                        await asyncio.sleep(2)
+                        confirm_els = await page.query_selector_all(SELECTORS["response"])
+                        confirm = ((await confirm_els[-1].inner_text()).strip()
+                                   if confirm_els else text)
+                        if len(confirm) > len(text):
+                            # 還在變長 → 渲染停頓誤判,繼續等
+                            prev_text = confirm
+                            stable_count = 0
+                            continue
                         break
-                # 條件 (b): 連 4 次穩定 (4 秒沒動) 直接跳出,不管按鈕
-                if stable_count >= 4:
+                # 條件 (b): 連 20 次穩定 (20 秒沒動) 直接跳出,不管按鈕
+                if stable_count >= 20:
                     break
             else:
                 stable_count = 0

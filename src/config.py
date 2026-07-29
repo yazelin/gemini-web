@@ -75,6 +75,14 @@ class Settings:
         )
         self.image_retention_days: int = _int(os.getenv("IMAGE_RETENTION_DAYS"), 7)
 
+        # 允許跨來源的瀏覽器前端(例如 comic-studio)。逗號分隔 origin;
+        # 空 = 不掛 CORS middleware,行為與過去一致。
+        self.cors_allow_origins: list[str] = [
+            o.strip().rstrip("/")
+            for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+            if o.strip()
+        ]
+
         # 官方 Gemini Developer API fallback（付費、快、穩）。
         # mode: "off" 不用 / "fallback" 瀏覽器失敗才頂上 / "primary" 直接用不跑瀏覽器
         self.gemini_official_api_key: str = os.getenv("GEMINI_OFFICIAL_API_KEY", "")

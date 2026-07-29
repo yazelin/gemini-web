@@ -295,6 +295,7 @@ if data["success"]:
 | `ADMIN_URL_PREFIX` | Admin webui 反代路徑前綴（如 `/gemini-web`） | 空 |
 | `GENERATED_DIR` | Admin History 頁落地圖片的目錄（API 回應仍是 base64，不受影響） | `~/.gemini-web/generated` |
 | `IMAGE_RETENTION_DAYS` | 落地圖片保留天數，超過的下次生圖時順便清 | `7` |
+| `CORS_ALLOW_ORIGINS` | 允許跨來源呼叫 API 的瀏覽器前端 origin（逗號分隔，如 `https://yazelin.github.io,http://localhost:8765`）；空＝不送 CORS header | 空 |
 
 ## 多帳號 worker pool
 

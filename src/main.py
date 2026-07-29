@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -46,6 +47,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Gemini Image API", lifespan=lifespan)
+if settings.cors_allow_origins:
+    # 讓純前端網頁(例如 comic-studio)可直接從瀏覽器打 /api/*。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "x-goog-api-key"],
+    )
 app.include_router(admin_router)
 # StaticFiles stats `directory` on every request, even with check_dir=False
 # (that flag only skips the *startup* check) — must exist up front, not just

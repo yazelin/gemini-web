@@ -64,3 +64,15 @@ def test_worker_profile_dir_nonzero(monkeypatch):
     assert path.endswith("profiles-1")
     path2 = get_worker_profile_dir(2)
     assert path2.endswith("profiles-2")
+
+
+def test_cors_allow_origins_default_empty(monkeypatch):
+    monkeypatch.delenv("CORS_ALLOW_ORIGINS", raising=False)
+    s = Settings()
+    assert s.cors_allow_origins == []
+
+
+def test_cors_allow_origins_parsed(monkeypatch):
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "https://yazelin.github.io/, http://localhost:8765 ,")
+    s = Settings()
+    assert s.cors_allow_origins == ["https://yazelin.github.io", "http://localhost:8765"]

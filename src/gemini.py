@@ -851,8 +851,8 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
                         confirm_els = await page.query_selector_all(SELECTORS["response"])
                         confirm = ((await confirm_els[-1].inner_text()).strip()
                                    if confirm_els else text)
-                        if len(confirm) > len(text):
-                            # 還在變長 → 渲染停頓誤判,繼續等
+                        if confirm != text:
+                            # 還在變(不一定變長,例如表格重排) → 渲染停頓誤判,繼續等
                             prev_text = confirm
                             stable_count = 0
                             continue

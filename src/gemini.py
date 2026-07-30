@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 
 from playwright.async_api import Page
 
@@ -107,6 +108,67 @@ _DISMISS_BANNER_JS = """
   return clicked;
 }
 """
+
+
+async def page_ready(page: Page) -> dict:
+    """頁面是不是「可以開工」的狀態。
+
+    只檢查輸入框不夠 —— 停在舊對話的頁面**輸入框還在**,少的是 composer 的
+    工具鈕,而那正是進圖片模式的入口(2026-07-30 worker 3 就卡在這:health
+    一直回報正常,實際上每筆生圖都失敗)。所以兩個都要看。
+
+    回傳 {"ready": bool, "missing": [...]}。
+    """
+    try:
+        has_input = await page.query_selector(SELECTORS["input"]) is not None
+        has_tools = await page.query_selector(SELECTORS["tools_button"]) is not None
+    except Exception as e:
+        return {"ready": False, "missing": ["page_error"], "detail": str(e)[:120]}
+    missing = [n for n, ok in (("input", has_input), ("tools_button", has_tools)) if not ok]
+    return {"ready": not missing, "missing": missing}
+
+
+async def dump_page_state(page: Page, tag: str, worker_id: int | None = None) -> str | None:
+    """把卡住的現場存下來:截圖 + 網址/標題/按鈕清單。
+
+    「卡在哪」光看 log 很難答,有截圖就一眼看得出是跳了對話框、停在舊對話、
+    還是版面根本沒渲染完。存在 <data_dir>/diagnostics/,只留最近 20 份。
+    """
+    try:
+        from .config import settings
+
+        out_dir = Path(settings.data_dir) / "diagnostics"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        base = out_dir / f"w{worker_id if worker_id is not None else 'x'}-{stamp}-{tag}"
+
+        await page.screenshot(path=f"{base}.png")
+        buttons = await page.evaluate("""() => Array.from(document.querySelectorAll('button'))
+            .map(b => ({text: b.innerText.trim().slice(0, 40),
+                        aria: (b.getAttribute('aria-label') || '').slice(0, 40)}))
+            .filter(b => b.text || b.aria)""")
+        info = {
+            "worker_id": worker_id,
+            "tag": tag,
+            "url": page.url,
+            "title": await page.title(),
+            "ready": await page_ready(page),
+            "buttons": buttons,
+        }
+        Path(f"{base}.json").write_text(
+            json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logger.warning("已存卡住現場:%s.png(+.json)", base)
+
+        # 只留最近 20 組,別把磁碟塞爆
+        shots = sorted(out_dir.glob("*.png"), key=lambda p: p.stat().st_mtime)
+        for old in shots[:-20]:
+            old.unlink(missing_ok=True)
+            old.with_suffix(".json").unlink(missing_ok=True)
+        return f"{base}.png"
+    except Exception as e:  # noqa: BLE001 — 診斷失敗不該影響主流程
+        logger.warning("存卡住現場失敗:%s", e)
+        return None
 
 
 async def _dismiss_onboarding(page: Page) -> None:
@@ -255,7 +317,7 @@ async def _enter_create_image_mode(page: Page, input_el):
         return False, input_el
 
 
-async def _ensure_create_image_mode(page: Page, input_el):
+async def _ensure_create_image_mode(page: Page, input_el, worker_id: int | None = None):
     """進圖片生成模式;第一次失敗就硬重置頁面再試一次。
 
     頁面若停在舊對話上,composer 的「上傳與工具」鈕不存在,選擇器會誤中
@@ -267,6 +329,8 @@ async def _ensure_create_image_mode(page: Page, input_el):
     if switched:
         return True, input_el
 
+    # 重置會把現場沖掉,所以先存證:截圖 + 按鈕清單,事後才查得出「卡在哪」
+    await dump_page_state(page, "image-mode", worker_id)
     logger.warning("進不了 Create image 模式,硬重置頁面後重試一次")
     if not await new_chat(page):
         return False, input_el
@@ -283,7 +347,8 @@ async def _ensure_create_image_mode(page: Page, input_el):
     return switched, input_el
 
 
-async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
+async def generate_image(page: Page, prompt: str, timeout: int = 60,
+                         worker_id: int | None = None) -> dict:
     """在 Gemini 頁面輸入 prompt 並擷取生成的圖片
 
     Returns:
@@ -320,7 +385,9 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
         await _dismiss_onboarding(page)
 
         # 1.7 點擊 Tools → Create image 進入圖片生成模式(進不去會自己重置重試)
-        switched_to_create_image, input_el = await _ensure_create_image_mode(page, input_el)
+        switched_to_create_image, input_el = await _ensure_create_image_mode(
+            page, input_el, worker_id
+        )
 
         if not switched_to_create_image:
             logger.warning("重置後仍進不了 Create image 模式,退回 prefix fallback")

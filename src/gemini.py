@@ -189,6 +189,96 @@ async def switch_model(page: Page, model: str) -> bool:
         return False
 
 
+async def _enter_create_image_mode(page: Page, input_el):
+    """點 Tools → 建立圖像,進入圖片生成模式。
+
+    回傳 (是否成功, 輸入框)。失敗不丟例外——呼叫端會硬重置頁面再試一次,
+    兩次都失敗才退回 prefix fallback。
+    """
+    try:
+        # Debug: 列出頁面上所有按鈕(頁面停在舊對話時,這份清單就是唯一線索)
+        all_btns = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('button')).map(b => ({
+                text: b.innerText.trim().substring(0, 50),
+                aria: (b.getAttribute('aria-label') || '').substring(0, 50),
+            })).filter(b => b.text || b.aria);
+        }""")
+        logger.info("頁面按鈕: %s", json.dumps(all_btns, ensure_ascii=False)[:500])
+
+        # 等 Tools 按鈕出現（頁面載入後可能需要幾秒）
+        tools_btn = await page.wait_for_selector(
+            SELECTORS["tools_button"], state="visible", timeout=8_000
+        )
+        if not tools_btn:
+            return False, input_el
+
+        await tools_btn.click()
+        logger.info("已點擊 Tools 按鈕，等待選單...")
+        await asyncio.sleep(1.5)
+        # 等 Create image 按鈕出現
+        create_img_btn = await page.wait_for_selector(
+            SELECTORS["create_image"], state="visible", timeout=5_000
+        )
+        if not create_img_btn:
+            logger.warning("找不到 Create image 按鈕")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+            return False, input_el
+
+        # 縮短 click timeout，避免 selector 過時時卡 30 秒重試
+        await create_img_btn.click(timeout=5_000)
+        await asyncio.sleep(1)
+        # 2026-06：「建立圖像」是 menuitemcheckbox，點完選單(overlay)不會
+        # 自動關，會擋住輸入框。按 Esc 關掉 overlay；image 模式已開啟，
+        # Esc 只關選單不會取消模式（已實機驗證）。
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(1)
+        logger.info("已切換至 Create image 模式")
+        # 重新取得輸入框（模式切換後可能會刷新）
+        refreshed = await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=10_000
+        )
+        return True, (refreshed or input_el)
+
+    except Exception as e:
+        logger.warning("切換 Create image 模式失敗：%s", e)
+        # 確保關閉可能開啟的選單
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
+        return False, input_el
+
+
+async def _ensure_create_image_mode(page: Page, input_el):
+    """進圖片生成模式;第一次失敗就硬重置頁面再試一次。
+
+    頁面若停在舊對話上,composer 的「上傳與工具」鈕不存在,選擇器會誤中
+    「開啟對話動作選單」→ 選單裡沒有「建立圖像」。這個髒狀態不會自己好:
+    每筆請求都退回 prefix fallback、純聊天產不出圖、空等到逾時,該 worker
+    從此再也生不出圖(2026-07-30 worker 3 實測 6 筆全滅)。所以要重置重試。
+    """
+    switched, input_el = await _enter_create_image_mode(page, input_el)
+    if switched:
+        return True, input_el
+
+    logger.warning("進不了 Create image 模式,硬重置頁面後重試一次")
+    if not await new_chat(page):
+        return False, input_el
+    await asyncio.sleep(1)
+    retry_input = await page.wait_for_selector(
+        SELECTORS["input"], state="visible", timeout=15_000
+    )
+    if not retry_input:
+        return False, input_el
+    await _dismiss_onboarding(page)
+    switched, input_el = await _enter_create_image_mode(page, retry_input)
+    if switched:
+        logger.info("重置後成功進入 Create image 模式")
+    return switched, input_el
+
+
 async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
     """在 Gemini 頁面輸入 prompt 並擷取生成的圖片
 
@@ -225,59 +315,11 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60) -> dict:
         # 1.6 點掉「我知道了」等橫幅（否則會擋住後面的下載按鈕）
         await _dismiss_onboarding(page)
 
-        # 1.7 點擊 Tools → Create image 進入圖片生成模式
-        switched_to_create_image = False
-        try:
-            # Debug: 列出頁面上所有按鈕
-            all_btns = await page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('button')).map(b => ({
-                    text: b.innerText.trim().substring(0, 50),
-                    aria: (b.getAttribute('aria-label') || '').substring(0, 50),
-                })).filter(b => b.text || b.aria);
-            }""")
-            logger.info("頁面按鈕: %s", json.dumps(all_btns, ensure_ascii=False)[:500])
-
-            # 等 Tools 按鈕出現（頁面載入後可能需要幾秒）
-            tools_btn = await page.wait_for_selector(
-                SELECTORS["tools_button"], state="visible", timeout=8_000
-            )
-            if tools_btn:
-                await tools_btn.click()
-                logger.info("已點擊 Tools 按鈕，等待選單...")
-                await asyncio.sleep(1.5)
-                # 等 Create image 按鈕出現
-                create_img_btn = await page.wait_for_selector(
-                    SELECTORS["create_image"], state="visible", timeout=5_000
-                )
-                if create_img_btn:
-                    # 縮短 click timeout，避免 selector 過時時卡 30 秒重試
-                    await create_img_btn.click(timeout=5_000)
-                    await asyncio.sleep(1)
-                    # 2026-06：「建立圖像」是 menuitemcheckbox，點完選單(overlay)不會
-                    # 自動關，會擋住輸入框。按 Esc 關掉 overlay；image 模式已開啟，
-                    # Esc 只關選單不會取消模式（已實機驗證）。
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(1)
-                    logger.info("已切換至 Create image 模式")
-                    switched_to_create_image = True
-                    # 重新取得輸入框（模式切換後可能會刷新）
-                    input_el = await page.wait_for_selector(
-                        SELECTORS["input"], state="visible", timeout=10_000
-                    )
-                else:
-                    logger.warning("找不到 Create image 按鈕，使用 prefix fallback")
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.5)
-        except Exception as e:
-            logger.warning("切換 Create image 模式失敗：%s，使用 prefix fallback", e)
-            # 確保關閉可能開啟的選單
-            try:
-                await page.keyboard.press("Escape")
-                await asyncio.sleep(0.3)
-            except Exception:
-                pass
+        # 1.7 點擊 Tools → Create image 進入圖片生成模式(進不去會自己重置重試)
+        switched_to_create_image, input_el = await _ensure_create_image_mode(page, input_el)
 
         if not switched_to_create_image:
+            logger.warning("重置後仍進不了 Create image 模式,退回 prefix fallback")
             prompt = f"Generate an image: {prompt}"
 
         # 2. 輸入 prompt（用 JS 直接寫入 + 模擬 Ctrl+V 貼上事件）

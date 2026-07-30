@@ -18,6 +18,7 @@ def _bare_pool(n: int, mode: str = "round-robin") -> "WorkerPool":
     pool._waiting = 0
     pool._mode = mode
     pool._next = 0
+    pool._pending_resets = [None] * n
     return pool
 
 
@@ -175,3 +176,74 @@ async def test_queue_full_error():
     pool._waiting = 0
     with pytest.raises(QueueFullError):
         await pool.dispatch("chat", "hello", "", 10)
+
+
+# ── 逾時/取消後的頁面清理(2026-07-30 worker 3 連環壞掉的根因)──
+
+
+@pytest.mark.asyncio
+async def test_timeout_schedules_page_reset(monkeypatch):
+    """請求逾時被取消 → 該 worker 的頁面必須被排入重置。
+
+    不重置的話,頁面會停在半路(選單開著/舊對話),下一筆接手就再失敗一次,
+    worker 從此再也生不出圖 —— 2026-07-30 worker 3 就是這樣一路壞下去。
+    """
+    import src.worker_pool as wp
+
+    pool = _bare_pool(1)
+    reset_calls = []
+
+    async def fake_new_chat(page):
+        reset_calls.append(page)
+        return True
+
+    monkeypatch.setattr(wp, "new_chat", fake_new_chat)
+
+    async def hang(worker_id, kind, prompt, model, timeout, extra=None):
+        await asyncio.sleep(10)
+
+    pool._run = hang
+    with pytest.raises(asyncio.TimeoutError):
+        await pool.dispatch("generate", "x", "", 0.05)
+
+    await asyncio.sleep(0)  # 讓排進去的 reset task 有機會跑
+    assert len(reset_calls) == 1, "逾時後沒有排入頁面重置"
+    assert pool._idle_ids == {0}, "worker 沒有還回池子"
+    assert pool._pending_resets[0] is not None, "重置沒記進 _pending_resets"
+
+
+@pytest.mark.asyncio
+async def test_normal_finish_does_not_double_reset(monkeypatch):
+    """正常完成的請求不該被額外排一次重置(_run 尾端已經排過)。"""
+    import src.worker_pool as wp
+
+    pool = _bare_pool(1)
+    reset_calls = []
+
+    async def fake_new_chat(page):
+        reset_calls.append(page)
+        return True
+
+    monkeypatch.setattr(wp, "new_chat", fake_new_chat)
+
+    async def ok(worker_id, kind, prompt, model, timeout, extra=None):
+        return {"success": True}
+
+    pool._run = ok
+    assert (await pool.dispatch("generate", "x", "", 5))["success"]
+    assert reset_calls == [], "正常路徑不該由 _acquire_and_run 再排重置"
+
+
+@pytest.mark.asyncio
+async def test_ctx_records_worker_even_on_timeout():
+    """逾時時 ctx 仍要帶回 worker id,否則 admin history 查不出哪個 worker 壞了。"""
+    pool = _bare_pool(1)
+
+    async def hang(worker_id, kind, prompt, model, timeout, extra=None):
+        await asyncio.sleep(10)
+
+    pool._run = hang
+    ctx: dict = {}
+    with pytest.raises(asyncio.TimeoutError):
+        await pool.dispatch("generate", "x", "", 0.05, ctx=ctx)
+    assert ctx.get("worker_id") == 0

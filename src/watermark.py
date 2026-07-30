@@ -15,11 +15,15 @@
       obs = k·α·c + (1−k·α)·orig
   (c=RGB 常數色、k=不透明度縮放、α=星形模板、orig 用 Telea inpaint 估計),
   在高斯模糊域算 R²(星是平滑訊號,網點/筆觸紋理是噪音)。
-- 閘門:R² ≥ 0.75、k∈[0.4,2.8]、c 各通道 ∈[−40,296]、效果量 ≥ 5、
-  |NCC| ≥ 0.3。最後一項是「可見度」:NCC 趨近 0 代表星色和背景幾乎同色
-  (白星在白底),人眼本來就看不到,跳過不動最安全。
+- 閘門:R² ≥ 0.70、k∈[0.4,2.8]、c 各通道 ∈[−40,296]、效果量 ≥ 5、
+  |NCC| ≥ 0.3(可見度:趨近 0 代表星色與背景幾乎同色,人眼看不到,不動)、
+  硬邊界比例 ≤ 0.12(背景估不準就不動,見下)。
 - 還原:反混合 orig = (obs − k·α·c)/(1−k·α);不透明核心 (1−k·α < 0.35)
   資訊已被蓋掉,改用 inpaint 背景填。
+
+已知品質限制(2026-07-30 高倍實測):星的**輪廓線常有殘留**——借來的 α 模板
+形狀與新版浮水印的實際 α 剖面對不上,邊緣扣不乾淨。內部已清掉,平坦背景上
+仍看得出一圈細線。要根治得重估 α 剖面或改成「遮罩 + 學習式 inpaint」。
 
 對外介面維持不變:remove_watermark(input_path, output_path=None) -> str
 """
@@ -40,6 +44,12 @@ _EFFECT_MIN = 5.0       # 星區平均偏離量(太小=沒東西可除)
 _NCC_MIN = 0.3          # 可見度:|NCC| 低於此值人眼看不到,不動
 _CORE_KEEP = 0.35       # 1−k·α 低於此值視為不透明核心 → inpaint 填
 _BLUR_SIGMA = 2.5
+
+# 背景可靠度:星區底下若有硬邊界(髮際、綠幕/角色交界),Telea inpaint 估出的
+# 背景會把鄰邊顏色拉進來 → 反混合+核心填補會在圖上留灰黑污漬。那比留著浮水印
+# 糟得多,所以「背景估不準就不動」。(2026-07-30 live 實例:貼圖白衣被塗灰)
+_EDGE_GRAD = 40.0       # Sobel 梯度視為硬邊界的門檻
+_EDGE_FRAC_MAX = 0.12   # 星罩內硬邊界像素佔比上限
 
 _MARGIN = 120           # 星心離右/下邊界距離(s=1)
 _JITTER = 8             # canonical 位置容差(px, s=1)
@@ -116,6 +126,13 @@ def _fit_region(img: np.ndarray, x: int, y: int, size: int) -> dict | None:
     effect = float(np.mean(np.abs(rhs)))
     c_bgr = a_bgr / (k if abs(k) > 1e-6 else 1e-6)
 
+    # 背景可靠度:星罩底下的硬邊界比例(高 → inpaint 估背景會拉錯色)
+    bg_gray = cv2.cvtColor(bg_s.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    grad = np.abs(cv2.Sobel(bg_gray, cv2.CV_32F, 1, 0, 3)) + np.abs(
+        cv2.Sobel(bg_gray, cv2.CV_32F, 0, 1, 3)
+    )
+    edge_frac = float((grad[m] > _EDGE_GRAD).mean())
+
     # 可見度(極性無關 NCC):B/G/R 各算一次取最大——灰階會漏掉
     # 亮度差小但色度差明顯的星(白星在粉膚、灰星在橘底)
     t0 = tpl - tpl.mean()
@@ -133,7 +150,8 @@ def _fit_region(img: np.ndarray, x: int, y: int, size: int) -> dict | None:
     rec = (roi - af * a_bgr[None, None, :]) / np.clip(keep, 0.15, 1.0)
     rec = np.where(keep < _CORE_KEEP, bg, rec)
     rec = np.clip(rec, 0, 255).astype(np.uint8)
-    return dict(r2=r2, k=k, c=c_bgr, effect=effect, ncc=ncc, rec=rec, xy=(x, y, size))
+    return dict(r2=r2, k=k, c=c_bgr, effect=effect, ncc=ncc, edge_frac=edge_frac,
+                rec=rec, xy=(x, y, size))
 
 
 def _sane(f: dict | None) -> bool:
@@ -142,6 +160,7 @@ def _sane(f: dict | None) -> bool:
         f is not None
         and _K_RANGE[0] <= f["k"] <= _K_RANGE[1]
         and f["effect"] >= _EFFECT_MIN
+        and f["edge_frac"] <= _EDGE_FRAC_MAX
         and all(_C_RANGE[0] <= v <= _C_RANGE[1] for v in f["c"])
     )
 
@@ -171,7 +190,18 @@ def _detect(img: np.ndarray) -> dict | None:
                 key = f["r2"] * min(f["effect"], 12.0)
                 if best is None or key > best["r2"] * min(best["effect"], 12.0):
                     best = f
-    if best is None or best["r2"] < _R2_MIN or abs(best["ncc"]) < _NCC_MIN:
+    if best is None:
+        logger.info("去水印:canonical 區無合理候選,保留原圖")
+        return None
+    if best["r2"] < _R2_MIN or abs(best["ncc"]) < _NCC_MIN:
+        x, y, size = best["xy"]
+        c = best["c"]
+        logger.info(
+            "去水印:候選未過閘門(r2=%.2f k=%.2f ncc=%.2f eff=%.1f edge=%.2f "
+            "c=(%.0f,%.0f,%.0f) region=(%d,%d,%d)),保留原圖",
+            best["r2"], best["k"], best["ncc"], best["effect"], best["edge_frac"],
+            c[2], c[1], c[0], x, y, size,
+        )
         return None
     return best
 
@@ -196,15 +226,14 @@ def remove_watermark(input_path: str, output_path: str | None = None) -> str:
             return input_path
 
         f = _detect(img)
-        if f is None:
-            logger.info("去水印:canonical 區無可見浮水印,保留原圖")
+        if f is None:  # keep 原因已在 _detect 內帶數據記錄
             return input_path
 
         x, y, size = f["xy"]
         c = f["c"]
         logger.info(
-            "去水印:r2=%.2f k=%.2f ncc=%.2f c=(%.0f,%.0f,%.0f) region=(%d,%d,%d)",
-            f["r2"], f["k"], f["ncc"], c[2], c[1], c[0], x, y, size,
+            "去水印:r2=%.2f k=%.2f ncc=%.2f edge=%.2f c=(%.0f,%.0f,%.0f) region=(%d,%d,%d)",
+            f["r2"], f["k"], f["ncc"], f["edge_frac"], c[2], c[1], c[0], x, y, size,
         )
         out = img.copy()
         out[y:y + size, x:x + size] = f["rec"]

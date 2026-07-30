@@ -4,7 +4,7 @@
 
 使用 Playwright 自動化 Gemini 網頁版，提供**圖片生成**和**文字對話**功能。支援 **CLI 工具**和 **HTTP API** 兩種使用方式。
 
-自動移除 Gemini 可見水印（NCC 動態偵測 + 反 alpha，基於 [remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks)）。
+自動移除 Gemini 可見水印（色彩自適應星形擬合＋反混合，α 模板借自 [remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks)）。
 
 ## 安裝
 
@@ -209,18 +209,27 @@ sudo bash scripts/install-service.sh
 
 ## 去水印
 
-使用維護中的 [remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks) 套件，
-以 **NCC（Normalized Cross-Correlation）動態偵測** 找出可見浮水印位置後再反 alpha 還原。
+自家實作的**色彩自適應星形還原**（`src/watermark.py`，只向
+[remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks) 借 α 星形模板）。
 
-- 動態偵測，不寫死位置/大小 —— 新版 Gemini（Gemini 3 / nano-banana-pro）各種長寬比都吃
-- 信心門檻 0.6：偵測不到浮水印的圖原檔不動，不會在無浮水印圖上誤刮
-- 純 CPU、離線、每張約 0.5 秒
-- API 模式自動去水印
-- CLI 模式加 `--no-watermark`
+2026-07 起 Gemini 浮水印改版：同一顆四角星，但顏色改成取樣周圍內容
+（白/灰/黑/橘/洋紅都出現過）、不透明度拉高。做法：
+
+- **位置先驗**：星心固定在離右下角 (120s, 120s)，s=1|2（39 張實圖校準，無例外），
+  只在該區 ±8s px 搜尋，不會誤刮圖片其他區域
+- **偵測＝擬合**：解線性模型 `obs = k·α·c + (1−k·α)·orig`（c=任意 RGB 色），
+  以模糊域 R²、參數合理性、效果量、三通道 NCC 可見度當閘門；
+  「先選再驗」——只驗最佳候選，避免多重比較誤傷無星圖
+- **還原**：反混合；不透明核心（資訊已被蓋掉）用 Telea inpaint 填
+- 純 CPU、離線、每張約 1–3 秒
+- API 模式自動去水印；CLI 模式加 `--no-watermark`
 - 不可見的 SynthID 浮水印無法移除（需 GPU + 擴散模型，本服務不處理）
+- 已知極限：星色與背景幾乎同色（白星白底）時視為不可見、故意不動；
+  canvas 縮圖後備路徑（星被縮放偏離先驗）可能漏抓
 
-> 舊版用寫死右下角位置 + 固定 alpha map 的反 alpha；新版 Gemini 改了輸出比例後會去到錯位、
-> 留下痕跡，故改用動態偵測的套件。
+> 歷史：v1 寫死右下角位置反 alpha → Gemini 改輸出比例後錯位；
+> v2 改用 remove-ai-watermarks 白色模板 NCC 偵測 → 2026-07 浮水印改色後
+> conf 崩到門檻以下（八成漏抓），勉強過線的用白色假設反 alpha 又留黑星殘塊，故有 v3。
 
 ## AI Agent 整合
 

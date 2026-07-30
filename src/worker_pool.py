@@ -9,7 +9,8 @@ from typing import Any
 
 from .browser import BrowserManager
 from .config import settings, get_worker_profile_dir
-from .gemini import chat, generate_image, new_chat, switch_model
+from .gemini import (chat, dump_page_state, generate_image, new_chat, page_ready,
+                     switch_model)
 from .selectors import IMAGE_FALLBACK_MAP
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,39 @@ class WorkerPool:
         if self._free is not None:
             self._free.set()
 
+    async def _ensure_page_ready(self, worker_id: int):
+        """確保 worker 的頁面可以開工;修不好就重啟它的瀏覽器。
+
+        三段式:就緒就走 → 不就緒先重置對話 → 還是不行就存證 + 重啟瀏覽器。
+        回傳可用的 page(重啟後是新的),全失敗回 None。
+        """
+        bm = self._workers[worker_id]
+        page = bm.page
+        if not page:
+            return None
+        state = await page_ready(page)
+        if state["ready"]:
+            return page
+
+        logger.warning("Worker %d 頁面未就緒(缺 %s),先重置對話", worker_id, state["missing"])
+        await dump_page_state(page, "not-ready", worker_id)
+        await new_chat(page)
+        state = await page_ready(page)
+        if state["ready"]:
+            logger.info("Worker %d 重置後恢復就緒", worker_id)
+            return page
+
+        logger.error("Worker %d 重置後仍未就緒(缺 %s),重啟瀏覽器", worker_id, state["missing"])
+        try:
+            await bm.stop()
+            await bm.start()
+        except Exception as e:  # noqa: BLE001 — 重啟失敗要讓請求照常往下走並回報
+            logger.error("Worker %d 瀏覽器重啟失敗:%s", worker_id, e)
+            return bm.page
+        if bm.page and (await page_ready(bm.page))["ready"]:
+            logger.warning("Worker %d 已靠重啟瀏覽器恢復", worker_id)
+        return bm.page
+
     def _schedule_reset(self, worker_id: int) -> None:
         """排一次頁面重置,並記進 _pending_resets 讓下一筆請求先 await 它。"""
         bm = self._workers[worker_id]
@@ -179,6 +213,11 @@ class WorkerPool:
                 logger.warning("Worker %d 上次 reset 失敗: %s", worker_id, e)
         self._pending_resets[worker_id] = None
 
+        # 開工前先確認頁面可用。停在舊對話的頁面「輸入框還在、工具鈕不在」,
+        # 硬做下去就是點錯 → 空等到逾時 → 連環失敗。修不好就重啟這個 worker
+        # 的瀏覽器 —— 寧可花 10 秒重啟,也不要讓它一路失敗到有人發現。
+        page = await self._ensure_page_ready(worker_id) or page
+
         if model:
             await switch_model(page, model)
 
@@ -199,7 +238,7 @@ class WorkerPool:
                     None, _remove_watermarks, result["images"]
                 )
         else:
-            result = await generate_image(page, prompt, timeout)
+            result = await generate_image(page, prompt, timeout, worker_id=worker_id)
 
             # Pro 圖片生成失敗 → 自動 fallback 到 Flash 重試
             fallback_model = IMAGE_FALLBACK_MAP.get(model) if model else None
@@ -212,7 +251,7 @@ class WorkerPool:
                 await switch_model(page, fallback_model)
                 remaining = timeout - int(time.time() - start)
                 if remaining > 30:
-                    result = await generate_image(page, prompt, remaining)
+                    result = await generate_image(page, prompt, remaining, worker_id=worker_id)
                     if result.get("success"):
                         result["actual_model"] = fallback_model
                 else:
@@ -241,10 +280,14 @@ class WorkerPool:
         for i, bm in enumerate(self._workers):
             alive = await bm.is_alive()
             logged_in = await bm.is_logged_in() if alive else False
+            # ready 比 logged_in 嚴格:停在舊對話的頁面「輸入框還在但工具鈕不見」,
+            # logged_in 會回 True 而生圖每筆都失敗 —— 卡住要從這欄才看得出來。
+            ready = (await page_ready(bm.page))["ready"] if (alive and bm.page) else False
             s = {
                 "id": i,
                 "alive": alive,
                 "logged_in": logged_in,
+                "ready": ready,
                 "busy": i not in self._idle_ids,
             }
             if include_account:

@@ -15,7 +15,7 @@ dependencies = [
     "httpx>=0.27",
     "Pillow>=10.0",
     "numpy>=1.26",
-    "remove-ai-watermarks==0.12.1",
+    "opencv-python-headless>=4.10",
     "python-multipart>=0.0.9",
 ]
 

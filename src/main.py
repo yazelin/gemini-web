@@ -111,12 +111,18 @@ async def _dispatch_and_log(
     """
     start = time.time()
     resolved_key_name = api_key_name if api_key_name is not None else _identify_caller(request)
+    # dispatch 會把實際承接的 worker 寫進 ctx。逾時(wait_for 取消)時 result 拿不到,
+    # 只能靠 ctx 才知道是哪個 worker —— 沒有它,admin history 的失敗列 worker 欄
+    # 永遠是空的,壞掉的 worker 就查不出來(2026-07-30 worker 3 就查了很久)。
+    ctx: dict = {}
     try:
-        result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra)
-    except Exception:
+        result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra, ctx=ctx)
+    except Exception as e:
         admin_db.record(
             kind=kind, prompt=prompt, status="failed",
+            error=f"{type(e).__name__}: {e}"[:200] or "dispatch failed",
             duration_seconds=time.time() - start, api_key_name=resolved_key_name,
+            worker_id=ctx.get("worker_id"),
         )
         raise
 
@@ -215,7 +221,9 @@ async def _maybe_official(prompt: str, request: Request, reference_image: str | 
         logger.warning("官方 API fallback 失敗：%s", e)
         return None
     if imgs:
-        logger.info("官方 Gemini API 產出 %d 張圖", len(imgs))
+        # WARNING 而非 INFO:每次頂替都代表瀏覽器路失敗一次,而且是**付費**產出。
+        # 消費端拿到圖完全無感,只有這行 log 會說出「有 worker 壞了、帳單在長」。
+        logger.warning("瀏覽器路失敗,改用付費官方 API 產出 %d 張圖(請查 worker 健康)", len(imgs))
         return {"success": True, "images": imgs, "via": "official"}
     return None
 

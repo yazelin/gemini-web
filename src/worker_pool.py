@@ -71,7 +71,8 @@ class WorkerPool:
             await bm.stop()
             logger.info("Worker %d 已關閉", i)
 
-    async def dispatch(self, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
+    async def dispatch(self, kind: str, prompt: str, model: str, timeout: int,
+                       extra: dict | None = None, ctx: dict | None = None) -> dict:
         """分配請求到空閒 worker，全忙則等待
 
         Args:
@@ -88,7 +89,7 @@ class WorkerPool:
         self._waiting += 1
         try:
             return await asyncio.wait_for(
-                self._acquire_and_run(kind, prompt, model, timeout, extra),
+                self._acquire_and_run(kind, prompt, model, timeout, extra, ctx),
                 timeout=timeout,
             )
         finally:
@@ -130,12 +131,33 @@ class WorkerPool:
         if self._free is not None:
             self._free.set()
 
-    async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:
+    def _schedule_reset(self, worker_id: int) -> None:
+        """排一次頁面重置,並記進 _pending_resets 讓下一筆請求先 await 它。"""
+        bm = self._workers[worker_id]
+        if not bm.page:
+            return
+        logger.warning("Worker %d 請求中斷,排入頁面重置", worker_id)
+        self._pending_resets[worker_id] = asyncio.create_task(new_chat(bm.page))
+
+    async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int,
+                               extra: dict | None = None, ctx: dict | None = None) -> dict:
         """取一個空閒 worker 跑請求,結束/逾時/出錯都保證把它還回池子。"""
         wid = await self._acquire()
+        if ctx is not None:
+            # 讓呼叫端在「逾時被取消」時仍知道是哪個 worker(否則 admin history
+            # 的失敗列 worker 欄是空的,查不出兇手)
+            ctx["worker_id"] = wid
+        finished = False
         try:
-            return await self._run(wid, kind, prompt, model, timeout, extra)
+            result = await self._run(wid, kind, prompt, model, timeout, extra)
+            finished = True
+            return result
         finally:
+            if not finished:
+                # 被取消(API 層 wait_for 逾時)或丟例外 → _run 尾端的重置沒跑到,
+                # 頁面停在半路(選單開著/舊對話),下一筆接手就會連環失敗
+                # (2026-07-30 worker 3 就是這樣一路壞下去)。補排一次重置。
+                self._schedule_reset(wid)
             self._release(wid)
 
     async def _run(self, worker_id: int, kind: str, prompt: str, model: str, timeout: int, extra: dict | None = None) -> dict:

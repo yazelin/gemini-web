@@ -115,7 +115,11 @@ async def _dismiss_onboarding(page: Page) -> None:
         clicked = await page.evaluate(_DISMISS_BANNER_JS)
         if clicked:
             logger.info("關閉 onboarding 橫幅: %s", clicked)
-            await asyncio.sleep(0.3)
+            # 關掉橫幅會讓 Angular 重繪 composer,舊的 0.3 秒不夠:2026-07-30
+            # worker 3 就是關完橫幅 0.4 秒後去點 Tools,點到還沒重繪好的版面 →
+            # 選單沒開 → 進不了圖片模式 → 空等到逾時 → 頁面留髒 → 連環失敗。
+            # 這個橫幅三天只出現一次,多等一秒的代價可以忽略。
+            await asyncio.sleep(1.5)
     except Exception:
         pass
 

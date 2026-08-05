@@ -23,6 +23,11 @@ class QueueFullError(Exception):
 
 DISPATCH_MODES = ("round-robin", "spillover")
 
+# 連續幾次 no_response 就重啟該 worker 的瀏覽器。
+# 1 太躁進(Gemini 偶爾就是會慢到逾時一次),2 已經足夠——2026-08-05 那次是
+# 連續 6 次全滅,設 2 的話第二筆就會自己爬起來,而不是卡到有人發現。
+NO_RESPONSE_RESTART_THRESHOLD = 2
+
 
 class WorkerPool:
     """管理 N 個 BrowserManager，依 dispatch mode 分配請求
@@ -51,6 +56,9 @@ class WorkerPool:
         # 但 _run 不會 block 在 reset 上 — 它會提前 return result,讓 client
         # (例如 openclaw) 在 60 秒 timeout 內收到回應。
         self._pending_resets: list[asyncio.Task | None] = []
+        # 每個 worker 連續回 no_response 的次數(成功一次就歸零)。
+        # 用來抓「頁面殼還在但 session 已死」——page_ready 看不出來的那種卡死。
+        self._no_response_streak: list[int] = []
         self._waiting = 0
 
     async def start(self) -> None:
@@ -62,6 +70,7 @@ class WorkerPool:
             await bm.start()
             self._workers.append(bm)
             self._pending_resets.append(None)
+            self._no_response_streak.append(0)
             self._idle_ids.add(i)
             logger.info("Worker %d 已啟動（profile: %s）", i, profile_dir)
         self._free.set()
@@ -165,6 +174,46 @@ class WorkerPool:
             logger.warning("Worker %d 已靠重啟瀏覽器恢復", worker_id)
         return bm.page
 
+    def _note_no_response(self, worker_id: int, result: dict) -> int:
+        """更新該 worker 的連續 no_response 計數,回傳更新後的值。
+
+        只有 no_response 算數:content_blocked、invalid_input 之類是這一筆的問題,
+        不代表 session 壞了,不該把 worker 拖去重啟。
+        """
+        if result.get("error") == "no_response":
+            self._no_response_streak[worker_id] += 1
+        else:
+            self._no_response_streak[worker_id] = 0
+        return self._no_response_streak[worker_id]
+
+    async def _recover_from_no_response(self, worker_id: int, streak: int) -> None:
+        """no_response 後的恢復:先存證,再視連續次數決定重置對話還是重啟瀏覽器。
+
+        存證擺第一,因為 new_chat / 重啟都會把現場沖掉——2026-08-05 卡了一整個
+        上午卻連一張截圖都沒有,就是因為只有 page_ready 失敗才存證,而那次
+        page_ready 從頭到尾都是 True。
+        """
+        bm = self._workers[worker_id]
+        if bm.page:
+            await dump_page_state(bm.page, "no-response", worker_id)
+
+        if streak < NO_RESPONSE_RESTART_THRESHOLD:
+            logger.warning("Worker %d no_response(連續 %d 次),先重置對話", worker_id, streak)
+            if bm.page:
+                await new_chat(bm.page)
+            return
+
+        logger.error("Worker %d 連續 %d 次 no_response,重啟瀏覽器", worker_id, streak)
+        try:
+            await bm.stop()
+            await bm.start()
+            logger.warning("Worker %d 已靠重啟瀏覽器恢復", worker_id)
+        except Exception as e:  # noqa: BLE001 — 這是背景 task,丟例外沒人接
+            logger.error("Worker %d 瀏覽器重啟失敗:%s", worker_id, e)
+        finally:
+            # 不歸零的話下一筆一失敗就又觸發重啟,變成每筆都重啟。
+            self._no_response_streak[worker_id] = 0
+
     def _schedule_reset(self, worker_id: int) -> None:
         """排一次頁面重置,並記進 _pending_resets 讓下一筆請求先 await 它。"""
         bm = self._workers[worker_id]
@@ -265,7 +314,19 @@ class WorkerPool:
         # Fire-and-forget reset:return result 後在背景重置對話頁面。
         # 下次 _run 進來時會 await 這個 task,確保乾淨狀態。
         # 對 image gen 特別重要 — openclaw 對 image gen 有 60 秒硬編碼 timeout。
-        self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
+        #
+        # no_response 走另一條:prompt 送得出去卻等不到任何回應,單純 new_chat
+        # 救不回來(2026-08-05 四個 worker 就是這樣連續失敗到有人發現)。改排
+        # 存證 + 視情況重啟瀏覽器的恢復 task。一樣掛在 _pending_resets 上,
+        # 下一筆請求會先 await 它,不會拿到重啟到一半的 page。
+        if self._note_no_response(worker_id, result):
+            self._pending_resets[worker_id] = asyncio.create_task(
+                self._recover_from_no_response(
+                    worker_id, self._no_response_streak[worker_id]
+                )
+            )
+        else:
+            self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
         result["worker_id"] = worker_id
         return result
 

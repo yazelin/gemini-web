@@ -1,6 +1,7 @@
 """Playwright 瀏覽器管理 — 啟動、stealth、session 持久化"""
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 from playwright.async_api import async_playwright, BrowserContext, Page
@@ -39,6 +40,21 @@ _STEALTH_SCRIPT = """
     };
 }
 """
+
+
+# 只攔字體/樣式表的網址 —— 絕對不要改回 "**/*"。
+#
+# 用 "**/*" 攔截時,每一個網路請求都會在 Python 這側建出 Request + Route +
+# Response 三個物件,而 Request 的 initializer 帶著整包 postData ——
+# Gemini 每次對話的 XHR 都馱著整段對話(log 裡看得到 13KB、29KB 的 body)。
+# 這些物件不會因為導航而回收:playwright driver 要累積到「每型別 10,000 個」
+# 才丟掉最舊的 10%,而 4 個 worker 各有獨立連線,等於上限 ×4。
+#
+# 2026-08-05 實測後果:service 跑兩天 Python RSS 從 78MB 長到 1.06GB,
+# 8/03 整個服務被 oom-kill。受控實驗(400 次 XHR,每次 20KB postData):
+#   "**/*"        → 留下 1203 個物件、RSS +17.1MB(每請求約 42KB,一個都沒回收)
+#   只攔 font/css → 留下 0 個物件、RSS +0.0MB(與完全不攔相同)
+_ASSET_URL_RE = re.compile(r"\.(css|woff2?|ttf|otf|eot)(\?|$)", re.I)
 
 
 class BrowserManager:
@@ -90,9 +106,9 @@ class BrowserManager:
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
 
-        # 擋掉不必要的資源
+        # 擋掉不必要的資源（只攔 font/css 的網址，理由見 _ASSET_URL_RE）
         await self._page.route(
-            "**/*",
+            _ASSET_URL_RE,
             lambda route: (
                 route.abort()
                 if route.request.resource_type in ("font", "stylesheet")

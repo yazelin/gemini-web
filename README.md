@@ -207,6 +207,21 @@ print(response.text)
 sudo bash scripts/install-service.sh
 ```
 
+### 健檢
+
+沒事的時候跑一下，看服務有沒有在偷偷爛掉（唯讀、只用標準函式庫）：
+
+```bash
+python3 scripts/checkup.py
+```
+
+一次看完服務狀態、記憶體有沒有在漏、worker 是否就緒、近 7 天成功率、
+最近的失敗明細，以及自癒機制有沒有一直在救火。
+
+> 為什麼要看這些：worker 可能「health 全綠但全滅」——輸入框都在、
+> prompt 送得出去，卻再也等不到回應。這種卡法只有成功率看得出來。
+> 記憶體那欄則是盯 `page.route` 造成的洩漏有沒有復發（見 PR #28）。
+
 ## 去水印
 
 **反向 alpha 混合**，數學還原、不做生成式修補（`src/watermark.py`，純 OpenCV）。

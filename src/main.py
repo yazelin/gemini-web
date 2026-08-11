@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -90,6 +91,25 @@ def _identify_caller(request: Request | None) -> str:
         admin_db.mark_api_key_used(row["id"])
         return row["name"]
     return "unknown key"
+
+
+def _first_inline_image(body: dict) -> str | None:
+    """從 generateContent 的 contents 撈出參考圖的 base64。
+
+    由後往前找（多輪對話時最後一則才是這次要編的圖），一次只取一張——
+    瀏覽器路的 edit 流程只上傳得了一張。`inlineData` / `inline_data` 兩種
+    寫法都收（Google SDK 送前者，手刻 JSON 的呼叫端常送後者）。
+    """
+    for content in reversed(body.get("contents") or []):
+        for part in (content or {}).get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData") or part.get("inline_data") or {}
+            data = inline.get("data")
+            mime = inline.get("mimeType") or inline.get("mime_type") or ""
+            if data and str(mime).startswith("image/"):
+                return data
+    return None
 
 
 async def _dispatch_and_log(
@@ -439,11 +459,23 @@ async def _generate_content_impl(model: str, body: dict, request: Request | None
             "Output raw JSON.\n\n" + prompt
         )
 
-    kind = "generate" if is_image else "chat"
+    # 帶圖 + 要圖 → 走 edit（image-to-image）。不轉的話 build_prompt 會把
+    # inlineData 換成 "[inline_data:image/png]" 這串字，圖的位元組就在那一步
+    # 掉了，等於「拿純文字 prompt 生圖」，呼叫端送的參考圖形同沒送（而且是
+    # HTTP 200，沒有任何錯誤）。ai-brain-site 的格莉奇日記踩了整整一季。
+    ref_image = _first_inline_image(body) if is_image else None
+    if ref_image:
+        # 佔位字串留著只會干擾模型，走 edit 時圖是真的送進去的
+        prompt = re.sub(r"\[inline_data:[^\]]*\]\s*", "", prompt).strip()
+        kind, extra = "edit", {"reference_image": ref_image}
+        logger.info("帶參考圖(%d chars base64)，改走 edit", len(ref_image))
+    else:
+        kind, extra = ("generate" if is_image else "chat"), None
     timeout = settings.default_timeout
 
     try:
-        result = await _dispatch_and_log(kind, prompt, model, timeout, request=request)
+        result = await _dispatch_and_log(kind, prompt, model, timeout,
+                                         extra=extra, request=request)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="Queue full")
     except asyncio.TimeoutError:

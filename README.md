@@ -222,6 +222,24 @@ python3 scripts/checkup.py
 > prompt 送得出去，卻再也等不到回應。這種卡法只有成功率看得出來。
 > 記憶體那欄則是盯 `page.route` 造成的洩漏有沒有復發（見 PR #28）。
 
+### 金絲雀（每天自動跑）
+
+`checkup.py` 要有人想到才會跑。金絲雀是**主動**的：每天早上 08:00 真的生一張圖，
+確認瀏覽器路還活著，壞了就開一張帶 `canary` label 的 GitHub issue。
+
+```bash
+python3 scripts/canary.py            # 檢查，壞了才開 issue
+python3 scripts/canary.py --dry-run  # 只檢查
+```
+
+排在格莉奇日記那班（22:10）之前，壞掉當天還來得及處理。
+
+> **判死活只能看 `admin.db` 那筆的 `via` 是不是 `browser`。** 2026-08-07 出圖全滅
+> 卻五天沒人發現，是因為每一層都讓故障看起來像正常：`/api/generate` 失敗會被
+> 付費官方 API 靜默頂替（curl 照樣 200 拿到圖）、`/api/health` 只看輸入框和工具鈕
+> 所以全綠、消費端出圖失敗會安靜退回純文字而 workflow 仍然 success。
+> 三層剛好疊在一起，外面完全看不出來。
+
 ## 去水印
 
 **反向 alpha 混合**，數學還原、不做生成式修補（`src/watermark.py`，純 OpenCV）。

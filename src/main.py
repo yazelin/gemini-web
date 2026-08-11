@@ -492,7 +492,6 @@ async def _generate_content_impl(model: str, body: dict, request: Request | None
 
     # JSON 回應清理（Gemini 網頁版可能加 "JSON\n" 前綴或 code block）
     if not is_image and result.get("text") and not has_function_tools:
-        import re
         text = result["text"].strip()
         # 去掉 ```json ... ``` code block
         m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)

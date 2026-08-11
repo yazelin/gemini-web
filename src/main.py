@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import admin_db, image_store
+from . import admin_db, image_store, jobs
 from .admin import router as admin_router
 from .config import settings
 from .official_api import official_generate
@@ -37,6 +37,9 @@ _start_time = time.time()
 async def lifespan(app: FastAPI):
     """服務生命週期：啟動 worker pool，結束時清理"""
     admin_db.init_db()
+    stale = jobs.fail_stale_running()
+    if stale:
+        logger.warning("啟動時把 %d 筆卡在 running 的 job 標成 failed", stale)
     worker_pool.set_mode(admin_db.get_setting("dispatch_mode", "round-robin"))
     await worker_pool.start()
     logger.info(
@@ -387,7 +390,9 @@ def _verify_api_key(request: Request, key: str | None):
     raise HTTPException(status_code=403, detail="Invalid API key")
 
 
-async def _generate_content_impl(model: str, body: dict, request: Request | None = None) -> dict:
+async def _generate_content_impl(
+    model: str, body: dict, request: Request | None = None, api_key_name: str | None = None
+) -> dict:
     """Google GenAI API 相容端點的核心邏輯,可被 streaming / non-streaming 共用。"""
 
     # 前置驗證: dump 完整 body 結構 (隱藏 base64 內容避免 log 爆炸)
@@ -475,7 +480,7 @@ async def _generate_content_impl(model: str, body: dict, request: Request | None
 
     try:
         result = await _dispatch_and_log(kind, prompt, model, timeout,
-                                         extra=extra, request=request)
+                                         extra=extra, request=request, api_key_name=api_key_name)
     except QueueFullError:
         raise HTTPException(status_code=429, detail="Queue full")
     except asyncio.TimeoutError:
@@ -604,3 +609,51 @@ async def genai_stream_generate_content(
 
     media_type = "text/event-stream" if alt == "sse" else "application/json"
     return StreamingResponse(event_stream(), media_type=media_type)
+
+
+# ── 非同步 job：送出拿 id、之後輪詢 ─────────────────────────────────
+# 出圖 30-300 秒，同步端點撐不過 Cloudflare Worker / nginx 預設逾時。
+# body 跟 generateContent 完全一樣，多一個 model 欄位，消費端不用學新格式。
+
+
+@app.post("/api/jobs", status_code=202)
+async def create_job(request: Request, key: str = Query(default=None)):
+    _verify_api_key(request, key)
+    body = await request.json()
+    # settings 沒有 default_image_model 這個欄位（查過 config.py 確認過，
+    # 實際圖片模型 id 定義在 GEMINI_OFFICIAL_MODEL/selectors.py），這裡沒有
+    # 現成常數可引用，就用字面值當 fallback；消費端多半會自己帶 model。
+    model = body.pop("model", None) or "gemini-2.5-flash-image"
+    if not body.get("contents"):
+        raise HTTPException(status_code=400, detail="No content in request")
+    key_name = _identify_caller(request)
+    job_id = jobs.create(model, body, key_name)
+    asyncio.create_task(_run_job(job_id, model, body, key_name))
+    return {"id": job_id, "status": "queued"}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str, request: Request, key: str = Query(default=None)):
+    _verify_api_key(request, key)
+    row = jobs.get(job_id, _identify_caller(request))
+    if row is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "response": row["response"],
+        "error": row["error"],
+        "created_at": row["created_at"],
+    }
+
+
+async def _run_job(job_id: str, model: str, body: dict, key_name: str | None) -> None:
+    jobs.mark_running(job_id)
+    try:
+        result = await _generate_content_impl(model, body, request=None, api_key_name=key_name)
+        jobs.finish(job_id, result)
+    except HTTPException as e:
+        jobs.fail(job_id, f"{e.status_code}: {e.detail}")
+    except Exception as e:  # noqa: BLE001 — job 失敗要記下來，不能讓它卡在 running
+        logger.exception("job %s 失敗", job_id)
+        jobs.fail(job_id, f"{type(e).__name__}: {e}")

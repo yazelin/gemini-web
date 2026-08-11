@@ -615,6 +615,14 @@ async def genai_stream_generate_content(
 # 出圖 30-300 秒，同步端點撐不過 Cloudflare Worker / nginx 預設逾時。
 # body 跟 generateContent 完全一樣，多一個 model 欄位，消費端不用學新格式。
 
+# asyncio.create_task() 回傳的 Task，event loop 只留弱引用；沒有人握著強
+# 引用的話，這個 Task 隨時可能在跑到一半時被 GC 回收 —— 而 _run_job 一開
+# 頭就把 job 標成 running，被回收就等於卡死在 running 到下次服務重啟才被
+# fail_stale_running() 清掉，違反「每一條離開 running 的路都要有出口」。
+# 做法比照 worker_pool.py 的 _pending_resets 慣例：留一個地方存 Task，
+# 完成時用 done callback 自動從集合裡移除，不會無限長大。
+_background_tasks: set[asyncio.Task] = set()
+
 
 @app.post("/api/jobs", status_code=202)
 async def create_job(request: Request, key: str = Query(default=None)):
@@ -628,7 +636,9 @@ async def create_job(request: Request, key: str = Query(default=None)):
         raise HTTPException(status_code=400, detail="No content in request")
     key_name = _identify_caller(request)
     job_id = jobs.create(model, body, key_name)
-    asyncio.create_task(_run_job(job_id, model, body, key_name))
+    task = asyncio.create_task(_run_job(job_id, model, body, key_name))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {"id": job_id, "status": "queued"}
 
 

@@ -85,6 +85,16 @@ class BrowserManager:
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
             profile_path,
+            # channel="chromium" = 完整 chromium 跑新版 headless；不給 channel 的話
+            # Playwright 會用 chromium_headless_shell（精簡殼），2026-08-07 起 Gemini
+            # 網頁版對它一律不出圖 —— 送得出 prompt、也秒回，但回的是
+            # 「I seem to be encountering an error」之類的通用錯誤，chat 卻完全正常。
+            # 實測（同帳號同 profile、prompt 都是 a simple red circle on white）：
+            #   headless_shell → 三種路徑（生成圖片頁 / 重試 / chat 加前綴）全部 0 張
+            #   channel=chromium → 15 秒出圖
+            # 假 UA 蓋不蓋沒差（連 HeadlessChrome/145 的真 UA 也照樣出圖），
+            # 所以判準是瀏覽器本體不是 UA 字串。
+            channel="chromium",
             headless=self._headless_override if self._headless_override is not None else settings.headless,
             locale=languages[0] if languages else "zh-TW",
             timezone_id=settings.stealth_timezone,

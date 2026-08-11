@@ -197,6 +197,43 @@ _BLOCK_PHRASES = [
     "violates my safety",
 ]
 
+# Gemini 自己出包時回的通用錯誤（不是安全拒絕，也不是還在生成中）。
+# 2026-08 那次 headless_shell 被拒出圖就是回這幾句，而程式在等圖片元素，
+# 於是每筆都空等滿逾時（400 秒）才發現沒圖，錯誤內容也沒被記下來。
+# 見到這些就別再等了，直接把原文帶回去。
+_GENERIC_ERROR_PHRASES = [
+    "I seem to be encountering an error",
+    "I'm having a hard time fulfilling your request",
+    "Something went wrong",
+    "Sorry, something went wrong",
+    "發生錯誤",
+    "出了點問題",
+]
+
+
+async def _wait_for_image_or_error(page: Page, wait_ms: int) -> str | None:
+    """等生成的圖片出現；Gemini 若先回通用錯誤就提早收工。
+
+    回傳踩到的錯誤原文（截斷），沒踩到就回 None——圖出現了、或等到逾時，
+    兩種都由呼叫端照原本的邏輯往下走。
+
+    只認「明確的錯誤字樣」而不是「有文字就算完成」：出圖成功時 Gemini 也可能
+    先吐一段說明文字，用文字有無當終止條件會在圖還在渲染時就誤判成失敗。
+    """
+    deadline = time.monotonic() + wait_ms / 1000
+    while time.monotonic() < deadline:
+        if await page.query_selector(SELECTORS["images"]):
+            return None
+        els = await page.query_selector_all(SELECTORS["response"])
+        if els:
+            text = (await els[-1].inner_text()).strip()
+            for phrase in _GENERIC_ERROR_PHRASES:
+                if phrase.lower() in text.lower():
+                    logger.warning("Gemini 回通用錯誤，不再空等：%s", text[:120])
+                    return text[:200]
+        await asyncio.sleep(2)
+    return None
+
 
 async def switch_model(page: Page, model: str) -> bool:
     """切換 Gemini 模式（快捷/思考型/Pro）
@@ -424,11 +461,15 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60,
         #    策略 A：等��生成的圖片出現（最可靠）
         #    策略 B：���待 stop 按鈕消失（備用）
         logger.info("等待 Gemini 回應...")
+        # 預留 10 秒給後續處理，避免跟 queue timeout 撞
+        wait_ms = max((timeout - 10), 30) * 1000
+        err = await _wait_for_image_or_error(page, wait_ms)
+        if err:
+            return _error("gemini_error", f"Gemini 回錯誤：{err}",
+                          round(time.time() - start, 1))
         try:
-            # 先等圖片出現（預留 10 秒給後續處理，避免跟 queue timeout 撞）
-            wait_ms = max((timeout - 10), 30) * 1000
             await page.wait_for_selector(
-                SELECTORS["images"], state="visible", timeout=wait_ms
+                SELECTORS["images"], state="visible", timeout=5_000
             )
             logger.info("偵測到圖片元素")
             # 圖片出現後等 3 秒讓 Gemini 完整載入 (含 .loaded class)
@@ -749,10 +790,14 @@ async def edit_image(
         logger.info("已送出 edit prompt：%s", final_prompt[:80])
 
         # 6. 等回應出現 — 同 generate_image 的策略
+        wait_ms = max((timeout - 10), 30) * 1000
+        err = await _wait_for_image_or_error(page, wait_ms)
+        if err:
+            return _error("gemini_error", f"Gemini 回錯誤：{err}",
+                          round(time.time() - start, 1))
         try:
-            wait_ms = max((timeout - 10), 30) * 1000
             await page.wait_for_selector(
-                SELECTORS["images"], state="visible", timeout=wait_ms
+                SELECTORS["images"], state="visible", timeout=5_000
             )
             logger.info("偵測到圖片元素")
             await asyncio.sleep(3)

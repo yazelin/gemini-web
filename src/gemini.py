@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -1078,9 +1079,14 @@ _NO_ATTACHMENT_PHRASES = (
 
 
 def _looks_like_no_attachment(text: str) -> bool:
-    """只看開頭:整段掃的話,正常回覆裡提到「請提供更多資訊」也會誤判。"""
-    head = (text or "")[:120].lower()
-    return any(p.lower() in head for p in _NO_ATTACHMENT_PHRASES)
+    """只看第一句。
+
+    整段掃、甚至只掃開頭 120 字都會誤判——真的聽過之後的正常回覆裡出現
+    「若需要更細的分析請提供時間點」照樣中招。收不到檔案的時候,那句話一定
+    是第一句,所以切到第一個句號就夠。
+    """
+    first = re.split(r"[。！？\n]", (text or "").strip(), maxsplit=1)[0].lower()
+    return any(p.lower() in first for p in _NO_ATTACHMENT_PHRASES)
 
 
 async def chat_with_file(

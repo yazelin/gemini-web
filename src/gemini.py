@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -1068,12 +1069,33 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
         return _error("browser_error", str(e), elapsed)
 
 
+# Gemini 收不到附件時的招牌回覆。它不會報錯,會禮貌地請你上傳,然後照著
+# 你的文字描述憑空編一段分析——回來的東西看起來完全正常,只有內容是假的。
+_NO_ATTACHMENT_PHRASES = (
+    "沒有收到", "尚未收到", "未收到", "沒有提供", "尚未上傳", "請上傳", "請提供",
+    "無法讀取檔案", "看不到檔案",
+    "i don't see", "no file", "haven't received", "please upload", "please provide",
+)
+
+
+def _looks_like_no_attachment(text: str) -> bool:
+    """只看第一句。
+
+    整段掃、甚至只掃開頭 120 字都會誤判——真的聽過之後的正常回覆裡出現
+    「若需要更細的分析請提供時間點」照樣中招。收不到檔案的時候,那句話一定
+    是第一句,所以切到第一個句號就夠。
+    """
+    first = re.split(r"[。！？\n]", (text or "").strip(), maxsplit=1)[0].lower()
+    return any(p.lower() in first for p in _NO_ATTACHMENT_PHRASES)
+
+
 async def chat_with_file(
     page: Page,
     prompt: str,
     file_b64: str,
     filename: str = "upload.bin",
     timeout: int = 180,
+    _retry: bool = True,
 ) -> dict:
     """上傳一個檔案（音訊／圖片／文件）＋ 文字 prompt，取回**文字**回應。
 
@@ -1171,8 +1193,12 @@ async def chat_with_file(
                 arg=stem,
                 timeout=30_000,
             )
-            logger.info("附件已掛上：%s", base)
-            await asyncio.sleep(1.5)
+            # 卡片出現不等於傳完。Gemini 是先畫卡片、背景繼續上傳,太早按送出
+            # 就會拿到「請提供音檔」那種假成功(實測 14 次請求中 2 次)。
+            # 沉澱時間隨檔案大小走,至少 3 秒。
+            settle = max(3.0, len(data) / (1024 * 1024) * 2.0)
+            logger.info("附件已掛上：%s,沉澱 %.1f 秒等後端傳完", base, settle)
+            await asyncio.sleep(settle)
         except Exception:
             elapsed = round(time.time() - start, 1)
             return _error(
@@ -1183,6 +1209,23 @@ async def chat_with_file(
 
         # 4. 送出與讀取沿用 chat()
         result = await chat(page, prompt, timeout)
+
+        # 附件沒真的送到的時候,Gemini 不會報錯,它會很有禮貌地請你上傳檔案,
+        # 然後照著你的文字描述憑空編一段分析。那是最難查的一種失敗,所以這裡
+        # 主動認出來,開新對話重跑一次。
+        if (isinstance(result, dict) and result.get("success")
+                and _looks_like_no_attachment(result.get("text", ""))):
+            if _retry:
+                logger.warning("Gemini 說沒收到檔案,重試一次")
+                await new_chat(page)
+                await asyncio.sleep(2)
+                return await chat_with_file(page, prompt, file_b64, filename, timeout,
+                                            _retry=False)
+            logger.error("重試後 Gemini 還是說沒收到檔案")
+            return _error("attachment_lost",
+                          "附件沒送到 Gemini(重試過一次)。回覆內容是憑空推測的,不能用。",
+                          round(time.time() - start, 1))
+
         if isinstance(result, dict):
             result["elapsed_seconds"] = round(time.time() - start, 1)
         return result

@@ -164,6 +164,9 @@ async def _dispatch_and_log(
         image_paths=image_paths,
         api_key_name=resolved_key_name,
         worker_id=result.get("worker_id"),
+        # 文字路（chat / chat-file）的產出就是這段字。出圖路有 image_paths 連得到圖,
+        # 文字路原本哪裡都沒存,History 只看得到問了什麼、看不到答了什麼。
+        response_text=result.get("text") or "",
     )
     return result
 

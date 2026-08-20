@@ -51,6 +51,7 @@ def _connect() -> sqlite3.Connection:
         ("image_paths", "ALTER TABLE requests ADD COLUMN image_paths TEXT NOT NULL DEFAULT '[]'"),
         ("api_key_name", "ALTER TABLE requests ADD COLUMN api_key_name TEXT"),
         ("worker_id", "ALTER TABLE requests ADD COLUMN worker_id INTEGER"),
+        ("response_text", "ALTER TABLE requests ADD COLUMN response_text TEXT"),
     ):
         if col not in existing_cols:
             conn.execute(ddl)
@@ -88,6 +89,7 @@ def record(
     image_paths: list[str] | None = None,
     api_key_name: str = "",
     worker_id: int | None = None,
+    response_text: str = "",
 ) -> str:
     request_id = uuid.uuid4().hex[:12]
     with _connect() as conn:
@@ -95,8 +97,8 @@ def record(
             """
             INSERT INTO requests
                 (id, kind, prompt, status, via, error, duration_seconds, created_at,
-                 image_paths, api_key_name, worker_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 image_paths, api_key_name, worker_id, response_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request_id,
@@ -110,6 +112,9 @@ def record(
                 json.dumps(image_paths or []),
                 api_key_name,
                 worker_id,
+                # 只留前 4000 字。這是 admin log 不是稽核紀錄,代聽回覆動輒上千字,
+                # 全存進去會把這張只留 500 筆的表撐大。
+                (response_text or "")[:4000],
             ),
         )
         # keep the table from growing forever — this is an admin log, not an audit trail

@@ -741,3 +741,31 @@ def test_stats_row_is_not_hardcoded_to_four():
 
     assert "repeat(auto-fit, minmax(180px, 1fr))" in _STYLES
     assert "repeat(4, minmax(0, 1fr))" not in _STYLES
+
+
+def test_history_stores_and_shows_response_text(tmp_path, monkeypatch):
+    """文字路的回覆要存得下來、也要在 History 頁面看得到。
+
+    出圖路有 image_paths 連得到圖，文字路（chat / chat-file）的產出就是那段字，
+    原本哪裡都沒存 —— History 只看得到問了什麼、看不到答了什麼。
+    """
+    import src.admin_db as admin_db
+    monkeypatch.setattr(admin_db, "_DB_PATH", tmp_path / "admin.db")
+    admin_db.record(
+        kind="chat_file", prompt="這段音樂有沒有人聲？", status="succeeded",
+        response_text="完全沒有任何人聲。",
+    )
+    row = admin_db.list_recent(1)[0]
+    assert row["response_text"] == "完全沒有任何人聲。"
+
+    from src.admin import _requests_page
+    html_out = _requests_page("")
+    assert "<th>Response</th>" in html_out
+
+
+def test_history_truncates_long_response(tmp_path, monkeypatch):
+    """代聽回覆動輒上千字，這張表只留 500 筆，別讓它無限長大。"""
+    import src.admin_db as admin_db
+    monkeypatch.setattr(admin_db, "_DB_PATH", tmp_path / "admin.db")
+    admin_db.record(kind="chat", prompt="x", status="succeeded", response_text="字" * 9000)
+    assert len(admin_db.list_recent(1)[0]["response_text"]) == 4000

@@ -702,6 +702,8 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
                 )
             except (ValueError, KeyError):
                 expires_str = "—"
+        # 文字路（chat / chat-file）的產出就是這段字；出圖路沒有，顯示 —
+        response_text = item.get("response_text") or ""
         delete_form = (
             f"<form method='post' action='{prefix}/admin/requests/{html.escape(item['id'])}/delete' style='display:inline'"
             " onsubmit=\"return confirm('Delete this history row and its image(s)?');\">"
@@ -721,6 +723,10 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
             f"<td class='cell-peek'><details><summary>{html.escape(_peek(item['prompt'])) or 'Prompt'}</summary>"
             f"<pre>{html.escape(item['prompt'])}</pre></details></td>"
             + (
+                f"<td class='cell-peek'><details><summary>{html.escape(_peek(response_text))}</summary>"
+                f"<pre>{html.escape(response_text)}</pre></details></td>"
+                if response_text else "<td class='cell-peek'>—</td>"
+            ) + (
                 f"<td class='cell-peek'><details><summary class='summary-error'>{html.escape(_peek(error))}</summary>"
                 f"<pre>{html.escape(error)}</pre></details></td>"
                 if error else "<td class='cell-peek'>—</td>"
@@ -729,12 +735,12 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
             "</tr>"
         )
     if not rows:
-        rows.append("<tr><td colspan='12' class='empty'>No requests logged yet.</td></tr>")
+        rows.append("<tr><td colspan='13' class='empty'>No requests logged yet.</td></tr>")
     return (
         "<div class='table-wrap'><table><thead><tr><th>Kind</th><th>Status</th><th>Key</th><th>Worker</th><th>Via</th><th>Duration</th>"
         "<th>Created</th>"
         f"<th title='Output images are deleted {settings.image_retention_days}d after creation by the sweep'>Expires</th>"
-        "<th>Images</th><th>Prompt</th><th>Error</th><th>Action</th></tr></thead><tbody>"
+        "<th>Images</th><th>Prompt</th><th>Response</th><th>Error</th><th>Action</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></div>"
     )

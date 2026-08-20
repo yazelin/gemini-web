@@ -272,6 +272,18 @@ class WorkerPool:
 
         if kind == "chat":
             result = await chat(page, prompt, timeout)
+        elif kind == "chat_file":
+            # 上傳一個檔案（音訊／文件／圖片）+ 問題,要的是文字答案不是圖
+            from .gemini import chat_with_file
+            file_b64 = (extra or {}).get("file", "")
+            if not file_b64:
+                self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
+                return {"success": False, "error": "invalid_input",
+                        "message": "chat_file 需要 file", "worker_id": worker_id}
+            result = await chat_with_file(
+                page, prompt, file_b64,
+                (extra or {}).get("filename", "upload.bin"), timeout,
+            )
         elif kind == "edit":
             from .gemini import edit_image
             ref_b64 = (extra or {}).get("reference_image", "")

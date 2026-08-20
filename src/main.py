@@ -181,6 +181,19 @@ class ChatRequest(BaseModel):
     timeout: int = 120
 
 
+class ChatFileRequest(BaseModel):
+    """上傳一個檔案 + 問題，取回文字回應。
+
+    file 接受 data URL（data:audio/mpeg;base64,xxx）或純 base64 字串，最大 20 MB。
+    filename 只用來決定副檔名——Gemini 靠副檔名判型別，音訊一定要帶 .mp3/.wav 之類。
+    """
+    prompt: str
+    file: str
+    filename: str = "upload.bin"
+    model: str = ""
+    timeout: int = 240
+
+
 class EditRequest(BaseModel):
     """以參考圖編輯模式生成圖片。
 
@@ -286,6 +299,29 @@ async def api_chat(req: ChatRequest, request: Request):
     _verify_api_key(request, None)
     try:
         result = await _dispatch_and_log("chat", req.prompt, "", req.timeout, request=request)
+    except QueueFullError:
+        raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+    return result
+
+
+@app.post("/api/chat-file")
+async def api_chat_file(req: ChatFileRequest, request: Request):
+    """上傳檔案（音訊／文件／圖片）+ 問題 → 文字回應
+
+    跟 /api/edit 的差別：那支要的是圖，這支要的是字。
+    典型用途：把一段音樂丟進來問「有沒有人聲、聽到哪些樂器」。
+    """
+    _verify_api_key(request, None)
+    if not req.file:
+        raise HTTPException(status_code=400, detail="缺少 file")
+    try:
+        result = await _dispatch_and_log(
+            "chat_file", req.prompt, req.model, req.timeout,
+            extra={"file": req.file, "filename": req.filename},
+            request=request,
+        )
     except QueueFullError:
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:

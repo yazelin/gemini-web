@@ -600,6 +600,54 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60,
         return _error("browser_error", str(e), elapsed)
 
 
+async def _attach_file(page: Page, tmp_path: str) -> None:
+    """點「上傳與工具」→ 選單 → file chooser → set_files。
+
+    這段從 edit_image 抽出來，讓 chat_with_file 共用。選單長相各帳號不同
+    （有的多一層子選單、有的第一次用會跳同意條款），已知變體全部在這裡。
+    失敗直接拋例外，由呼叫端決定錯誤訊息。
+    """
+    logger.info("點擊上傳按鈕 + 選單，等 file chooser...")
+    try:
+        async with page.expect_file_chooser(timeout=6_000) as fc_info:
+            try:
+                await page.click(SELECTORS["tools_button"], timeout=8_000)
+            except Exception:
+                await page.click(SELECTORS["upload_button"], timeout=5_000)
+            await asyncio.sleep(0.8)          # 等 mat-menu 動畫
+            try:
+                menu_items = await page.evaluate(_DUMP_MENU_JS)
+                logger.info("上傳與工具選單: %s", json.dumps(menu_items, ensure_ascii=False)[:400])
+            except Exception:
+                pass
+            await page.click(SELECTORS["upload_menu_item_local"])
+        file_chooser = await fc_info.value
+    except Exception:
+        # 沒跳檔案對話框。先印 overlay 留線索，再試兩種已知變體：
+        #   1. 同意條款對話框（該帳號第一次用上傳功能）
+        #   2. 多一層子選單（從電腦 / 從裝置上傳）
+        try:
+            overlay = await page.evaluate(_DUMP_MENU_JS)
+            logger.warning("沒跳 file chooser，當下 overlay: %s",
+                           json.dumps(overlay, ensure_ascii=False)[:400])
+        except Exception:
+            pass
+        file_chooser = None
+        for sel in ("upload_consent_accept", "upload_submenu_item_device"):
+            try:
+                async with page.expect_file_chooser(timeout=8_000) as fc_info:
+                    await page.click(SELECTORS[sel], timeout=3_000)
+                file_chooser = await fc_info.value
+                logger.info("靠 %s 拿到 file chooser", sel)
+                break
+            except Exception:
+                continue
+        if file_chooser is None:
+            raise RuntimeError("點完上傳檔案沒有 file chooser，同意鈕與子選單都試過了")
+    await file_chooser.set_files(tmp_path)
+    logger.info("已 set_files：%s", tmp_path)
+
+
 async def edit_image(
     page: Page,
     prompt: str,
@@ -685,51 +733,8 @@ async def edit_image(
         # 選項」同源），於是 expect_file_chooser 一路等到逾時、edit 100% 失敗。
         # 改成兩段：先用短逾時等 file chooser，沒等到就 dump 當下 overlay（留證據）
         # 並在新選單裡找「從電腦/裝置上傳」這類項目再點一次。
-        logger.info("點擊上傳按鈕 + 選單，等 file chooser...")
         try:
-            try:
-                async with page.expect_file_chooser(timeout=6_000) as fc_info:
-                    try:
-                        await page.click(SELECTORS["tools_button"], timeout=8_000)
-                    except Exception:
-                        await page.click(SELECTORS["upload_button"], timeout=5_000)
-                    # 等選單 render（mat-menu Angular 動畫約 200ms）
-                    await asyncio.sleep(0.8)
-                    # debug：dump 選單項目，選擇器再過時時可從 log 直接定位
-                    try:
-                        menu_items = await page.evaluate(_DUMP_MENU_JS)
-                        logger.info("上傳與工具選單: %s", json.dumps(menu_items, ensure_ascii=False)[:400])
-                    except Exception:
-                        pass
-                    await page.click(SELECTORS["upload_menu_item_local"])
-                file_chooser = await fc_info.value
-            except Exception:
-                # 沒跳檔案對話框。印出當下 overlay（選擇器再變時就是下一次的線索），
-                # 再依序試兩種已知變體：
-                #   1. 同意條款對話框 —— 該帳號第一次用上傳功能，overlay 會多出
-                #      「取消 / 同意」，按下「同意」才會開 file dialog（實測就是
-                #      worker 1/3 全滅的真正原因）
-                #   2. 多一層子選單（從電腦 / 從裝置上傳）
-                try:
-                    overlay = await page.evaluate(_DUMP_MENU_JS)
-                    logger.warning("沒跳 file chooser，當下 overlay: %s",
-                                   json.dumps(overlay, ensure_ascii=False)[:400])
-                except Exception:
-                    pass
-                file_chooser = None
-                for sel in ("upload_consent_accept", "upload_submenu_item_device"):
-                    try:
-                        async with page.expect_file_chooser(timeout=8_000) as fc_info:
-                            await page.click(SELECTORS[sel], timeout=3_000)
-                        file_chooser = await fc_info.value
-                        logger.info("靠 %s 拿到 file chooser", sel)
-                        break
-                    except Exception:
-                        continue
-                if file_chooser is None:
-                    raise RuntimeError("點完上傳檔案沒有 file chooser，同意鈕與子選單都試過了")
-            await file_chooser.set_files(tmp_path)
-            logger.info("已 set_files：%s（%d bytes）", tmp_path, len(img_bytes))
+            await _attach_file(page, tmp_path)
         except Exception as e:
             elapsed = round(time.time() - start, 1)
             return _error(
@@ -1061,6 +1066,129 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
         elapsed = round(time.time() - start, 1)
         logger.exception("Gemini chat 發生錯誤")
         return _error("browser_error", str(e), elapsed)
+
+
+async def chat_with_file(
+    page: Page,
+    prompt: str,
+    file_b64: str,
+    filename: str = "upload.bin",
+    timeout: int = 180,
+) -> dict:
+    """上傳一個檔案（音訊／圖片／文件）＋ 文字 prompt，取回**文字**回應。
+
+    跟 edit_image 的差別只有一個：那支要的是圖，這支要的是字。所以上傳段共用
+    _attach_file，送出與讀取段直接沿用 chat()——chat() 自己會重新抓輸入框、
+    貼字、送出、等回應穩定，附件留在 composer 裡會一起送出去。
+
+    Args:
+        page: 已開啟 Gemini 對話的 Playwright Page
+        prompt: 要問的問題
+        file_b64: 檔案內容。可以是 data:...;base64,xxx 或純 base64
+        filename: 原始檔名，只用來決定暫存檔副檔名（Gemini 靠副檔名判型別）
+        timeout: 整體 timeout 秒數
+
+    Returns:
+        {"success": True, "text": ..., "prompt": ..., "elapsed_seconds": ...}
+        或 {"success": False, "error": ..., "message": ...}
+    """
+    import base64 as _b64
+    import os
+    import tempfile
+
+    start = time.time()
+
+    raw = file_b64
+    if raw.startswith("data:"):
+        try:
+            _, raw = raw.split(",", 1)
+        except ValueError:
+            return _error("invalid_input", "file 格式錯誤")
+    try:
+        data = _b64.b64decode(raw)
+    except Exception:
+        return _error("invalid_input", "file 不是有效的 base64")
+    if not data:
+        return _error("invalid_input", "file 是空的")
+    if len(data) > 20 * 1024 * 1024:
+        return _error("invalid_input", "file 超過 20 MB")
+
+    suffix = os.path.splitext(filename)[1] or ".bin"
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="gemini_file_")
+    os.close(tmp_fd)
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+
+        # 1. 等輸入框、清掉可能擋住上傳鈕的 overlay 與橫幅
+        input_el = await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=15_000
+        )
+        if not input_el:
+            return _error("browser_error", "找不到輸入框")
+        await asyncio.sleep(1)
+        try:
+            await page.evaluate("""() => {
+                document.querySelectorAll('.cdk-overlay-container').forEach(el => {
+                    el.innerHTML = '';
+                });
+            }""")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+        await _dismiss_onboarding(page)
+
+        # 2. 上傳
+        try:
+            await _attach_file(page, tmp_path)
+        except Exception as e:
+            elapsed = round(time.time() - start, 1)
+            return _error("upload_failed", f"上傳檔案失敗：{e}", elapsed)
+
+        # 3. 等附件真的掛上去。圖片會出現 blob: 預覽，音訊／文件只會出現
+        #    一張帶檔名的卡片，所以兩種訊號都認。沒等到就不要硬送——沒有附件
+        #    的話 Gemini 會回「請提供檔案」，那種假成功最難查。
+        base = os.path.basename(filename)
+        stem = os.path.splitext(base)[0][:24]
+        try:
+            await page.wait_for_function(
+                """(needle) => {
+                    const imgs = Array.from(document.querySelectorAll('img'));
+                    if (imgs.some(i => (i.src || '').startsWith('blob:') && (i.naturalWidth || 0) > 30)) {
+                        return true;
+                    }
+                    if (!needle) return false;
+                    return (document.body.innerText || '').includes(needle);
+                }""",
+                arg=stem,
+                timeout=30_000,
+            )
+            logger.info("附件已掛上：%s", base)
+            await asyncio.sleep(1.5)
+        except Exception:
+            elapsed = round(time.time() - start, 1)
+            return _error(
+                "upload_timeout",
+                f"上傳後 30 秒內沒看到附件（{base}），可能沒真的傳上去",
+                elapsed,
+            )
+
+        # 4. 送出與讀取沿用 chat()
+        result = await chat(page, prompt, timeout)
+        if isinstance(result, dict):
+            result["elapsed_seconds"] = round(time.time() - start, 1)
+        return result
+
+    except Exception as e:
+        elapsed = round(time.time() - start, 1)
+        logger.exception("chat_with_file 發生錯誤")
+        return _error("browser_error", str(e), elapsed)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 async def new_chat(page: Page) -> bool:

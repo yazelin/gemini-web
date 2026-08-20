@@ -73,7 +73,7 @@ gemini-web serve --host 0.0.0.0 --port 8070
 API 模式自動去水印、自動下載原尺寸圖片。
 
 **金鑰**：只要設過任何一把金鑰（`.env` 的 `API_KEYS` 或 admin webui 現場發的動態 key），
-`/api/chat`、`/api/generate`、`/api/edit` 就都要帶 `x-goog-api-key`，沒帶回 403；一把金鑰都沒設過時維持開放（本機開發）。
+`/api/chat`、`/api/chat-file`、`/api/generate`、`/api/edit` 就都要帶 `x-goog-api-key`，沒帶回 403；一把金鑰都沒設過時維持開放（本機開發）。
 公開反代出去的服務請務必發 key —— 瀏覽器路燒的是登入帳號的**訂閱配額**，不是免費資源。
 建議一個 consumer 發一把（admin → API Keys），History 才分得出哪個專案吃掉多少。
 
@@ -95,6 +95,32 @@ curl -X POST http://localhost:8070/api/chat \
   "elapsed_seconds": 8.3
 }
 ```
+
+#### POST /api/chat-file（上傳檔案問問題）
+
+上傳一個檔案再問問題，回**文字**。跟 `/api/edit` 的差別只有一個：那支要的是圖，這支要的是字。
+音訊、PDF、文件都可以，Gemini 網頁吃得下的就吃得下。
+
+```bash
+curl -X POST http://localhost:8070/api/chat-file \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"這段音樂裡有沒有人聲？聽到哪些樂器？\",
+       \"file\": \"$(base64 -w0 song.mp3)\",
+       \"filename\": \"song.mp3\"}"
+```
+
+回傳跟 `/api/chat` 一樣的 `{"success", "text", "prompt", "elapsed_seconds"}`。
+
+| 欄位 | 說明 |
+|---|---|
+| `file` | data URL（`data:audio/mpeg;base64,xxx`）或純 base64，最大 20 MB |
+| `filename` | **一定要帶對副檔名。** Gemini 靠副檔名判型別，帶錯會被當成不明檔案，回你「請提供音檔」那種假成功 |
+| `model` | 選填。留空用當下模型；音訊判讀建議指定較強的模型，Flash-Lite 聽力不可靠 |
+| `timeout` | 預設 240 秒。音訊比文字慢 |
+
+上傳完成的判斷同時認兩種訊號：圖片的 `blob:` 預覽，或畫面上出現檔名的卡片。
+兩個都沒等到就直接回 `upload_timeout`，不會硬送——沒有附件的送出會拿到一句
+「請提供檔案」，那種假成功最難查。
 
 #### POST /api/generate
 

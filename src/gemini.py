@@ -1071,10 +1071,18 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
 
 # Gemini 收不到附件時的招牌回覆。它不會報錯,會禮貌地請你上傳,然後照著
 # 你的文字描述憑空編一段分析——回來的東西看起來完全正常,只有內容是假的。
-_NO_ATTACHMENT_PHRASES = (
-    "沒有收到", "尚未收到", "未收到", "沒有提供", "尚未上傳", "請上傳", "請提供",
-    "無法讀取檔案", "看不到檔案",
-    "i don't see", "no file", "haven't received", "please upload", "please provide",
+_NO_ATTACHMENT_PATTERNS = (
+    # 中文:「請先提供」「請上傳」「尚未收到」…。中間常插副詞(先/再/麻煩),
+    # 純字串比對會漏——實測就漏過「請先提供或上傳該音訊檔案」。
+    r"請\s*(先|再|麻煩)?\s*(提供|上傳|附上)",
+    r"(沒有|尚未|未|還沒)\s*(收到|接收到|取得|看到|讀取到)",
+    r"(沒有|尚未|未)\s*(提供|上傳|附上)",
+    r"(無法|看不到|讀不到)\s*(讀取)?\s*(檔案|音檔|音訊|附件)",
+    # 英文
+    r"(i\s+)?(don'?t|do not|cannot|can'?t)\s+(see|find|access|hear)",
+    r"(no|any)\s+(file|audio|attachment)\s+(was\s+)?(provided|attached|received)",
+    r"(haven'?t|have not)\s+received",
+    r"please\s+(upload|provide|attach|share)",
 )
 
 
@@ -1086,7 +1094,7 @@ def _looks_like_no_attachment(text: str) -> bool:
     是第一句,所以切到第一個句號就夠。
     """
     first = re.split(r"[。！？\n]", (text or "").strip(), maxsplit=1)[0].lower()
-    return any(p.lower() in first for p in _NO_ATTACHMENT_PHRASES)
+    return any(re.search(pat, first) for pat in _NO_ATTACHMENT_PATTERNS)
 
 
 async def chat_with_file(

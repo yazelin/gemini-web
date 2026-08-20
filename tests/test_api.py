@@ -147,6 +147,10 @@ def test_detects_gemini_saying_no_attachment():
     assert _looks_like_no_attachment("目前沒有收到任何音檔，請上傳或提供音訊後讓我為你評估。")
     assert _looks_like_no_attachment("請提供或上傳你想分析的音樂檔案。")
     assert _looks_like_no_attachment("I don't see a file attached. Please upload it.")
+    # 中間插一個副詞就比對不到,是實際漏掉過的變體
+    assert _looks_like_no_attachment("請先提供或上傳該音訊檔案。")
+    assert _looks_like_no_attachment("我還沒收到你的音檔。")
+    assert _looks_like_no_attachment("Please provide the audio file first.")
     # 真的聽過之後的正常回覆不能被誤判,即使後面提到「請提供」
     assert not _looks_like_no_attachment(
         "人聲：完全沒有任何人聲。樂器：鋼琴與 pad。若需要更細的分析請提供時間點。")

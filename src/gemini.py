@@ -1113,9 +1113,17 @@ async def chat_with_file(
     if len(data) > 20 * 1024 * 1024:
         return _error("invalid_input", "file 超過 20 MB")
 
-    suffix = os.path.splitext(filename)[1] or ".bin"
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="gemini_file_")
-    os.close(tmp_fd)
+    # 用暫存「資料夾」而不是 mkstemp,好讓檔案保留原本的名字。
+    # mkstemp 產生的是 gemini_file_XXXX.mp3,Gemini 畫面上顯示的就是那個亂數名,
+    # 後面拿原始檔名去比對附件卡片永遠對不上 → 每次都 upload_timeout。
+    import re as _re
+    import shutil as _shutil
+    base = os.path.basename(filename) or "upload.bin"
+    base = _re.sub(r"[^\w.\-]", "_", base)[:80]
+    if not os.path.splitext(base)[1]:
+        base += ".bin"
+    tmp_dir = tempfile.mkdtemp(prefix="gemini_file_")
+    tmp_path = os.path.join(tmp_dir, base)
     try:
         with open(tmp_path, "wb") as f:
             f.write(data)
@@ -1149,7 +1157,6 @@ async def chat_with_file(
         # 3. 等附件真的掛上去。圖片會出現 blob: 預覽，音訊／文件只會出現
         #    一張帶檔名的卡片，所以兩種訊號都認。沒等到就不要硬送——沒有附件
         #    的話 Gemini 會回「請提供檔案」，那種假成功最難查。
-        base = os.path.basename(filename)
         stem = os.path.splitext(base)[0][:24]
         try:
             await page.wait_for_function(
@@ -1185,10 +1192,7 @@ async def chat_with_file(
         logger.exception("chat_with_file 發生錯誤")
         return _error("browser_error", str(e), elapsed)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def new_chat(page: Page) -> bool:

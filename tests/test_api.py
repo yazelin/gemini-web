@@ -138,3 +138,16 @@ async def test_chat_file_rejects_empty_file(mock_worker_pool, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/chat-file", json={"prompt": "x", "file": ""})
     assert resp.status_code == 400
+
+
+def test_detects_gemini_saying_no_attachment():
+    """附件沒送到時 Gemini 不會報錯,它會禮貌地請你上傳,然後照文字描述憑空編
+    一段分析。看起來完全正常,只有內容是假的——這是最難查的一種失敗。"""
+    from src.gemini import _looks_like_no_attachment
+    assert _looks_like_no_attachment("目前沒有收到任何音檔，請上傳或提供音訊後讓我為你評估。")
+    assert _looks_like_no_attachment("請提供或上傳你想分析的音樂檔案。")
+    assert _looks_like_no_attachment("I don't see a file attached. Please upload it.")
+    # 真的聽過之後的正常回覆不能被誤判,即使後面提到「請提供」
+    assert not _looks_like_no_attachment(
+        "人聲：完全沒有任何人聲。樂器：鋼琴與 pad。若需要更細的分析請提供時間點。")
+    assert not _looks_like_no_attachment("這段音樂完全是純樂器演奏，沒有任何人聲。")

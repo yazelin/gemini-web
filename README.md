@@ -450,3 +450,18 @@ curl -X POST http://localhost:8070/api/video \
 
 **同步等到影片出來才回**，跟 `/api/generate` 一樣的形狀。Veo 慢很多，呼叫端的
 連線 timeout 要跟著放寬；真的卡到再改成 job 式。
+
+**影片請求只會派給做得到的帳號。** Veo 只給付費層，而多帳號部署裡不見得每個都有
+（Google One 家庭群組分享的方案，帳號畫面上仍可能顯示「升級」按鈕，**所以不能用
+外觀判斷**）。服務會實際打開工具選單看「建立影片」那一項在不在，結果快取起來：
+
+```bash
+curl -H "x-goog-api-key: YOUR_KEY" http://localhost:8070/api/capabilities
+# {"video": {"0": false, "1": true, "2": null, "3": true}, "video_capable": [1, 3]}
+
+# 換了帳號或選單改版之後強制重測
+curl -X POST -H "x-goog-api-key: YOUR_KEY" http://localhost:8070/api/capabilities/refresh
+```
+
+`null` 是「探測時頁面卡住」，不是「沒能力」——下次還會再試。一個都沒有時
+`/api/video` 回 **503** 並說明原因，不會白跑一趟。

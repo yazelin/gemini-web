@@ -502,6 +502,23 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
         await page.keyboard.type(prompt)
         await asyncio.sleep(0.5)
         await page.keyboard.press("Enter")
+
+        # 驗證真的送出去了。音樂模式的範本牆頁面上 Enter 有時不觸發送出，
+        # prompt 就一直躺在輸入框裡，然後等滿逾時什麼都沒發生
+        # （2026-08-22 實測：等了 555 秒，截圖顯示字還在框裡、送出鈕是亮的）。
+        await asyncio.sleep(1.5)
+        try:
+            still_there = await page.evaluate(
+                """(sel) => {const e = document.querySelector(sel);
+                             return e ? (e.innerText || e.value || '').trim() : ''}""",
+                SELECTORS["input"])
+            if still_there:
+                logger.warning("%s：Enter 沒送出，改點送出鈕", mode_label)
+                await page.click(SELECTORS["send"], timeout=10_000)
+                await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning("送出驗證失敗（繼續等結果）：%s", e)
+
         logger.info("%s prompt 已送出，開始等待（最長 %d 秒）", mode_label, timeout)
 
         # 等媒體元素出現。**內層一定要比外層早收工**：worker_pool 的

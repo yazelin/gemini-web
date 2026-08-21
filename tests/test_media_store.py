@@ -95,3 +95,25 @@ class TestNoStaleHandles:
         from src import gemini
         src = inspect.getsource(gemini._generate_media)
         assert "for attempt in range(3)" in src
+
+
+class TestSubmitVerification:
+    """Enter 有時不觸發送出，要驗證並退回點送出鈕
+
+    2026-08-22 實測：音樂模式的範本牆頁面上按 Enter 沒送出，prompt 一直躺在
+    輸入框裡，然後等滿 555 秒逾時——截圖顯示字還在框裡、送出鈕是亮的。
+    """
+
+    def test_submit_is_verified(self):
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._generate_media)
+        assert "Enter" in src
+        assert "SELECTORS[\"send\"]" in src
+
+    def test_verification_failure_does_not_abort(self):
+        """驗證本身出錯不該讓整單失敗——還是要去等結果"""
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._generate_media)
+        assert "送出驗證失敗（繼續等結果）" in src

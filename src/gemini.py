@@ -412,7 +412,25 @@ async def _log_result_menu(page: Page, label: str) -> None:
 
 
 async def probe_video_capability(page: Page) -> bool | None:
-    """看這個帳號的工具選單裡有沒有「建立影片」。（薄包裝，見 probe_tool_capability）"""
+    """看這個帳號做不做得了影片。
+
+    2026-08-22 Gemini 改版：左側導覽多了獨立的「影片」入口，而工具選單裡那一項
+    點了模式不黏（實測結果生出一張靜態圖）。所以先看側欄，側欄沒有才退回看
+    工具選單。順手把側欄項目記進 log —— 改版時那份就是線索。
+    """
+    try:
+        items = await page.evaluate(
+            """() => Array.from(document.querySelectorAll(
+                 "nav a, nav button, [role=navigation] a, [role=navigation] button"))
+               .filter(e => e.offsetParent !== null)
+               .map(e => (e.innerText || '').trim())
+               .filter(t => t && t.length < 20).slice(0, 20)""")
+        logger.info("側欄項目：%s", json.dumps(items, ensure_ascii=False)[:300])
+        if await page.query_selector(SELECTORS["sidebar_video"]):
+            logger.info("側欄有「影片」入口")
+            return True
+    except Exception as e:
+        logger.warning("查側欄影片入口失敗：%s", e)
     return await probe_tool_capability(page, "create_video", "建立影片")
 
 

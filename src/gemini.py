@@ -540,9 +540,23 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
                     if download_menu_key:
                         # 音樂的下載鈕會再開一個格式選單（影片／僅音訊），
                         # 不點第二下的話 expect_download 會空等到逾時
-                        await asyncio.sleep(1)
-                        item = await page.wait_for_selector(
-                            SELECTORS[download_menu_key], state="visible", timeout=10_000)
+                        await asyncio.sleep(1.5)
+                        item = await page.query_selector(SELECTORS[download_menu_key])
+                        if not item:
+                            # 選單沒開：把 overlay 裡實際有什麼記下來，下一輪才有依據
+                            overlay = await page.evaluate(
+                                """() => Array.from(document.querySelectorAll(
+                                     '.cdk-overlay-container *, [role=menu] *'))
+                                   .map(e => (e.innerText||'').trim().slice(0,30))
+                                   .filter(t => t).slice(0, 25)""")
+                            logger.warning("下載格式選單沒開，overlay 內容：%s",
+                                           json.dumps(overlay, ensure_ascii=False)[:500])
+                            # 再點一次（第一次可能只觸發了 hover）
+                            await btn.scroll_into_view_if_needed()
+                            await btn.click(force=True)
+                            await asyncio.sleep(1.5)
+                            item = await page.wait_for_selector(
+                                SELECTORS[download_menu_key], state="visible", timeout=15_000)
                         await item.click()
                 dl = await info.value
                 path = await dl.path()

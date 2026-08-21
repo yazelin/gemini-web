@@ -133,3 +133,32 @@ class TestToolMenuClick:
         assert "page.click(SELECTORS[selector_key]" in src
         assert "force=True" in src
         assert "create_img_btn.click" not in src
+
+
+class TestVideoDualPath:
+    """Gemini 兩版並行，影片要兩條路都試
+
+    2026-08-22 實測：worker 2 的側欄有「影片」「即時通訊」「Spark BETA」，
+    worker 0 沒有；而舊版工具選單裡的「建立影片」點了模式不黏（結果生出一張
+    靜態圖、輸入框退回普通聊天）。
+    """
+
+    def test_sidebar_first_then_tool_menu(self):
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._ensure_video_mode)
+        assert "_enter_video_via_sidebar" in src
+        assert "_ensure_tool_mode" in src
+        assert src.index("_enter_video_via_sidebar") < src.index("_ensure_tool_mode")
+
+    def test_only_video_takes_the_dual_path(self):
+        """音樂沒改版，還是走工具選單"""
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._generate_media)
+        assert 'mode_key == "create_video"' in src
+
+    def test_sidebar_selector_scoped_to_nav(self):
+        """不加 nav scope 會誤抓內文裡的「影片」字樣"""
+        from src.selectors import SELECTORS
+        assert "nav" in SELECTORS["sidebar_video"]

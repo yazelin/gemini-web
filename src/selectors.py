@@ -176,23 +176,22 @@ SELECTORS = {
         "button[role='menuitem']:has-text('Create music')"
     ),
 
-    # 生成出來的音樂。DOM 還沒實地看過，候選寫寬一點；抓不到會 dump_page_state
+    # 生成出來的音樂。**不是 <audio> 元素** —— Gemini 給的是一張自訂的專輯卡片，
+    # 音訊元素要點下播放才會出現。2026-08-22 實測頁面上一個 <audio> 都沒有，
+    # 診斷的按鈕清單裡才看到 aria-label 是「播放音樂」與「下載歌曲」。
     "audios": (
-        "generated-audio audio, "
-        "audio-player audio, "
-        "message-content audio, "
-        "model-response audio, "
-        "audio[src], "
-        "audio source[src]"
+        "button[aria-label='播放音樂'], "
+        "button[aria-label*='播放音樂'], "
+        "button[aria-label*='Play music'], "
+        "audio[src]"
     ),
 
     "download_audio": (
-        "download-generated-audio-button button, "
-        "button[aria-label*='下載音訊'], "
+        "button[aria-label='下載歌曲'], "
+        "button[aria-label*='下載歌曲'], "
         "button[aria-label*='下載音樂'], "
-        "button[aria-label*='Download audio'], "
-        "generated-audio button[aria-label*='下載'], "
-        "generated-audio button[aria-label*='Download']"
+        "button[aria-label*='Download song'], "
+        "button[aria-label*='Download audio']"
     ),
 
     # 影片的下載鈕，同樣是候選清單

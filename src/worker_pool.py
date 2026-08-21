@@ -10,10 +10,15 @@ from typing import Any
 from .browser import BrowserManager
 from .config import settings, get_worker_profile_dir
 from .gemini import (chat, dump_page_state, generate_image, generate_video, new_chat, page_ready,
+                     probe_video_capability,
                      switch_model)
 from .selectors import IMAGE_FALLBACK_MAP
 
 logger = logging.getLogger(__name__)
+
+
+class NoCapableWorkerError(Exception):
+    """沒有任何 worker 具備這個請求需要的能力（目前只有影片會用到）"""
 
 
 class QueueFullError(Exception):
@@ -50,6 +55,9 @@ class WorkerPool:
         # 關鍵:_release 是同步的,放進 finally 裡不會被 cancel 打斷 → worker 一定
         # 還得回來,不會像舊版 lock.acquire()+cancel 那樣洩漏鎖把 worker 卡死。
         self._idle_ids: set[int] = set()
+        # 每個帳號會不會做影片。None = 還沒探測過。Veo 只給付費層，而家庭群組
+        # 分享的方案從畫面上看不出來，所以只能實際開選單看那一項在不在。
+        self._can_video: dict[int, bool | None] = {}
         self._free: asyncio.Event | None = None
         # 每個 worker 的「待完成 reset」task。下次請求進來時必須先 await
         # 這個 task,確保上一次的對話已經乾淨重置才開始新請求。
@@ -97,40 +105,54 @@ class WorkerPool:
         if self._waiting >= self._max_waiting:
             raise QueueFullError(f"等待佇列已滿（{self._max_waiting}）")
 
+        allowed = None
+        if kind == "video":
+            await self.ensure_video_capabilities()
+            allowed = self.video_capable_ids()
+            if not allowed:
+                raise NoCapableWorkerError(
+                    "沒有任何帳號的工具選單裡有「建立影片」。Veo 只給付費層，"
+                    "請把有訂閱的 Google 帳號登進其中一個 worker profile。")
+            logger.info("影片請求，可用帳號：%s", sorted(allowed))
+
         self._waiting += 1
         try:
             return await asyncio.wait_for(
-                self._acquire_and_run(kind, prompt, model, timeout, extra, ctx),
+                self._acquire_and_run(kind, prompt, model, timeout, extra, ctx, allowed),
                 timeout=timeout,
             )
         finally:
             self._waiting -= 1
 
-    def _select(self) -> int:
+    def _select(self, allowed: set[int] | None = None) -> int:
         """從 _idle_ids 依 dispatch mode 挑一個 worker 並「取走」(從 set 移除)。
 
         呼叫前必須確定 _idle_ids 非空。純同步、無 await → check 到取走之間不會
         被別的 coroutine 插隊(single-thread event loop 的原子區間)。
         """
+        pool = self._idle_ids if allowed is None else (self._idle_ids & allowed)
         if self._mode == "round-robin":
             for off in range(self._count):
                 wid = (self._next + off) % self._count
-                if wid in self._idle_ids:
+                if wid in pool:
                     self._next = (wid + 1) % self._count
                     self._idle_ids.discard(wid)
                     return wid
         # spillover:永遠挑編號最小的空閒 worker(worker 0 主力)
-        wid = min(self._idle_ids)
+        wid = min(pool)
         self._idle_ids.discard(wid)
         return wid
 
-    async def _acquire(self) -> int:
-        """等到有空閒 worker,取走一個並回傳其 id(全忙就 await 到有人還回來)。"""
+    async def _acquire(self, allowed: set[int] | None = None) -> int:
+        """等到有空閒 worker,取走一個並回傳其 id(全忙就 await 到有人還回來)。
+
+        allowed 給定時只從那些 worker 裡挑——影片請求只有部分帳號做得到。
+        """
         assert self._free is not None, "pool 尚未 start()"
-        while not self._idle_ids:
+        while not (self._idle_ids if allowed is None else (self._idle_ids & allowed)):
             self._free.clear()
             await self._free.wait()
-        wid = self._select()
+        wid = self._select(allowed)
         if not self._idle_ids:
             self._free.clear()
         return wid
@@ -223,10 +245,35 @@ class WorkerPool:
         logger.warning("Worker %d 請求中斷,排入頁面重置", worker_id)
         self._pending_resets[worker_id] = asyncio.create_task(new_chat(bm.page))
 
+    async def ensure_video_capabilities(self, force: bool = False) -> dict[int, bool | None]:
+        """把還沒探測過的帳號逐一探測一次，回傳每個帳號會不會做影片。
+
+        一個一個取、探完就還回去，所以不會卡住其他請求太久（每個約兩秒）。
+        探測失敗（連工具選單都打不開）記成 None 而不是 False —— 那是頁面卡住，
+        不是帳號沒能力，下次還要再試。
+        """
+        for wid in range(self._count):
+            if not force and self._can_video.get(wid) is not None:
+                continue
+            acquired = await self._acquire({wid})
+            try:
+                page = await self._ensure_page_ready(acquired)
+                self._can_video[acquired] = (
+                    await probe_video_capability(page) if page else None)
+                logger.info("worker %d 影片能力：%s", acquired, self._can_video[acquired])
+            finally:
+                self._schedule_reset(acquired)
+                self._release(acquired)
+        return dict(self._can_video)
+
+    def video_capable_ids(self) -> set[int]:
+        return {w for w, ok in self._can_video.items() if ok}
+
     async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int,
-                               extra: dict | None = None, ctx: dict | None = None) -> dict:
+                               extra: dict | None = None, ctx: dict | None = None,
+                               allowed: set[int] | None = None) -> dict:
         """取一個空閒 worker 跑請求,結束/逾時/出錯都保證把它還回池子。"""
-        wid = await self._acquire()
+        wid = await self._acquire(allowed)
         if ctx is not None:
             # 讓呼叫端在「逾時被取消」時仍知道是哪個 worker(否則 admin history
             # 的失敗列 worker 欄是空的,查不出兇手)

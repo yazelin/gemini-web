@@ -373,6 +373,44 @@ async def _enter_tool_mode(page: Page, input_el, selector_key: str, label: str):
         return False, input_el
 
 
+async def probe_video_capability(page: Page) -> bool | None:
+    """看這個帳號的工具選單裡有沒有「建立影片」。
+
+    Veo 只給付費層，但**不能用「升級」按鈕在不在來判斷** —— Google One 家庭
+    群組分享的方案，帳號畫面上仍可能顯示升級。唯一可靠的是直接開選單看那一項
+    在不在。
+
+    回 True / False；連工具選單都打不開時回 None（那是頁面卡住，不是沒能力，
+    不該被記成「這個帳號不行」）。探測完會把選單關掉，不改變頁面模式。
+    """
+    try:
+        await _dismiss_onboarding(page)
+        tools_btn = await page.wait_for_selector(
+            SELECTORS["tools_button"], state="visible", timeout=8_000)
+        if not tools_btn:
+            return None
+        await tools_btn.click()
+        await asyncio.sleep(1.5)
+        found = await page.query_selector(SELECTORS["create_video"])
+        # 順手記下選單裡實際有哪些項目，選單改名時這份 log 就是線索
+        items = await page.evaluate("""() => Array.from(
+            document.querySelectorAll(".cdk-overlay-container [role='menuitemcheckbox'], "
+                                      + ".cdk-overlay-container [role='menuitem']")
+        ).map(e => e.innerText.trim().slice(0, 30)).filter(Boolean)""")
+        logger.info("工具選單項目：%s → 有影片=%s",
+                    json.dumps(items, ensure_ascii=False)[:300], bool(found))
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        return bool(found)
+    except Exception as e:
+        logger.warning("探測影片能力失敗：%s", e)
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return None
+
+
 async def _ensure_create_video_mode(page: Page, input_el, worker_id: int | None = None):
     """進影片生成模式;第一次失敗就硬重置頁面再試一次。理由同圖片那條。"""
     switched, input_el = await _enter_create_video_mode(page, input_el)

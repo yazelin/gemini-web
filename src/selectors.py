@@ -162,6 +162,39 @@ SELECTORS = {
         "video source[src]"
     ),
 
+    # 「創作音樂」——同一個工具選單裡的另一項。四個帳號實測都有。
+    "create_music": (
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('創作音樂'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('建立音樂'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('Create music'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('Make music'), "
+        ".cdk-overlay-container button:has-text('創作音樂'), "
+        ".cdk-overlay-container button:has-text('建立音樂'), "
+        ".cdk-overlay-container button:has-text('Create music'), "
+        "button[role='menuitem']:has-text('創作音樂'), "
+        "button[role='menuitem']:has-text('建立音樂'), "
+        "button[role='menuitem']:has-text('Create music')"
+    ),
+
+    # 生成出來的音樂。DOM 還沒實地看過，候選寫寬一點；抓不到會 dump_page_state
+    "audios": (
+        "generated-audio audio, "
+        "audio-player audio, "
+        "message-content audio, "
+        "model-response audio, "
+        "audio[src], "
+        "audio source[src]"
+    ),
+
+    "download_audio": (
+        "download-generated-audio-button button, "
+        "button[aria-label*='下載音訊'], "
+        "button[aria-label*='下載音樂'], "
+        "button[aria-label*='Download audio'], "
+        "generated-audio button[aria-label*='下載'], "
+        "generated-audio button[aria-label*='Download']"
+    ),
+
     # 影片的下載鈕，同樣是候選清單
     "download_video": (
         "download-generated-video-button button, "

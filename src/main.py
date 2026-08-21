@@ -343,6 +343,29 @@ async def api_video(req: VideoRequest, request: Request):
         raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
 
 
+class MusicRequest(BaseModel):
+    prompt: str
+    timeout: int = 600
+
+
+@app.post("/api/music")
+async def api_music(req: MusicRequest, request: Request):
+    """產生音樂
+
+    走 Gemini 網頁工具選單裡的「創作音樂」，跟影片同一條路。音檔以 base64
+    回傳（欄位 `audio`）。
+    """
+    _verify_api_key(request, None)
+    try:
+        return await _dispatch_and_log("music", req.prompt, "", req.timeout, request=request)
+    except NoCapableWorkerError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except QueueFullError:
+        raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+
+
 @app.get("/api/capabilities")
 async def api_capabilities(request: Request):
     """每個帳號會不會做影片。None = 還沒探測過（或探測時頁面卡住）
@@ -351,18 +374,24 @@ async def api_capabilities(request: Request):
     所以能力是實際開工具選單看那一項在不在，不是猜的。
     """
     _verify_api_key(request, None)
-    caps = await worker_pool.ensure_video_capabilities()
-    return {"video": {str(k): v for k, v in sorted(caps.items())},
-            "video_capable": sorted(worker_pool.video_capable_ids())}
+    out = {}
+    for kind in ("video", "music"):
+        caps = await worker_pool.ensure_capabilities(kind)
+        out[kind] = {str(k): v for k, v in sorted(caps.items())}
+        out[f"{kind}_capable"] = sorted(worker_pool.capable_ids(kind))
+    return out
 
 
 @app.post("/api/capabilities/refresh")
 async def api_capabilities_refresh(request: Request):
     """強制重新探測（換了帳號、或 Gemini 選單改版之後用）"""
     _verify_api_key(request, None)
-    caps = await worker_pool.ensure_video_capabilities(force=True)
-    return {"video": {str(k): v for k, v in sorted(caps.items())},
-            "video_capable": sorted(worker_pool.video_capable_ids())}
+    out = {}
+    for kind in ("video", "music"):
+        caps = await worker_pool.ensure_capabilities(kind, force=True)
+        out[kind] = {str(k): v for k, v in sorted(caps.items())}
+        out[f"{kind}_capable"] = sorted(worker_pool.capable_ids(kind))
+    return out
 
 
 @app.post("/api/chat")

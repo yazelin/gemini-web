@@ -429,3 +429,24 @@ uv run pytest -v
 ## 授權
 
 MIT License
+
+### POST /api/video
+
+產生影片（Veo）。走的是 Gemini 網頁工具選單裡的「建立影片」，跟生圖同一條瀏覽器路，
+所以帳號要有這個功能才行（工具選單裡看得到「建立影片」那一項）。
+
+```bash
+curl -X POST http://localhost:8070/api/video \
+  -H "Content-Type: application/json" -H "x-goog-api-key: YOUR_KEY" \
+  -d '{"prompt": "一隻橘貓在夜市裡跳舞，霓虹燈，慢動作"}'
+```
+
+| 欄位 | 預設 | 說明 |
+|---|---|---|
+| `prompt` | — | 影片描述 |
+| `timeout` | `600` | 這一支的秒數上限。Veo 要數分鐘，別照生圖的 60 秒設 |
+
+回 `{"success", "video", "mime", "prompt", "elapsed_seconds"}`，`video` 是 base64 的 mp4。
+
+**同步等到影片出來才回**，跟 `/api/generate` 一樣的形狀。Veo 慢很多，呼叫端的
+連線 timeout 要跟著放寬；真的卡到再改成 job 式。

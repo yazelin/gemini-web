@@ -133,4 +133,41 @@ SELECTORS = {
         "button[role='menuitem']:has-text('建立圖片'), "
         "button[role='menuitem']:has-text('Create image')"
     ),
+
+    # 「建立影片」——跟「建立圖像」同一個工具選單裡的另一項（Veo）。
+    # 選擇器寫法照抄圖片那條：scope 在 cdk-overlay 內，涵蓋 menuitemcheckbox
+    # 與 button 兩種角色、中英文兩種命名。
+    "create_video": (
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('建立影片'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('製作影片'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('Create video'), "
+        ".cdk-overlay-container [role='menuitemcheckbox']:has-text('Make a video'), "
+        ".cdk-overlay-container button:has-text('建立影片'), "
+        ".cdk-overlay-container button:has-text('製作影片'), "
+        ".cdk-overlay-container button:has-text('生成影片'), "
+        ".cdk-overlay-container button:has-text('Create video'), "
+        "button[role='menuitem']:has-text('建立影片'), "
+        "button[role='menuitem']:has-text('製作影片'), "
+        "button[role='menuitem']:has-text('Create video')"
+    ),
+
+    # 生成出來的影片。實際 DOM 還沒實地看過，所以候選寫寬一點；
+    # 抓不到時 generate_video 會 dump_page_state 存證，照那份修這一條。
+    "videos": (
+        "generated-video video, "
+        "video-container video, "
+        "message-content video, "
+        "model-response video, "
+        "video[src], "
+        "video source[src]"
+    ),
+
+    # 影片的下載鈕，同樣是候選清單
+    "download_video": (
+        "download-generated-video-button button, "
+        "button[aria-label*='下載影片'], "
+        "button[aria-label*='Download video'], "
+        "generated-video button[aria-label*='下載'], "
+        "generated-video button[aria-label*='Download']"
+    ),
 }

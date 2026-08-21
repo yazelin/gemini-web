@@ -9,7 +9,7 @@ from typing import Any
 
 from .browser import BrowserManager
 from .config import settings, get_worker_profile_dir
-from .gemini import (chat, dump_page_state, generate_image, new_chat, page_ready,
+from .gemini import (chat, dump_page_state, generate_image, generate_video, new_chat, page_ready,
                      switch_model)
 from .selectors import IMAGE_FALLBACK_MAP
 
@@ -86,7 +86,7 @@ class WorkerPool:
         """分配請求到空閒 worker，全忙則等待
 
         Args:
-            kind: "chat" / "generate" / "edit"
+            kind: "chat" / "chat_file" / "generate" / "video" / "edit"
             extra: edit 模式用，dict 含 reference_images (base64 或 data URL 字串的
                    list,順序有意義);舊的單數 reference_image 也還收
 
@@ -285,6 +285,8 @@ class WorkerPool:
                 page, prompt, file_b64,
                 (extra or {}).get("filename", "upload.bin"), timeout,
             )
+        elif kind == "video":
+            result = await generate_video(page, prompt, timeout, worker_id=worker_id)
         elif kind == "edit":
             from .gemini import edit_image
             refs = (extra or {}).get("reference_images") or []

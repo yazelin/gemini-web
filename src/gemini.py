@@ -477,6 +477,46 @@ async def probe_tool_capability(page: Page, selector_key: str, label: str) -> bo
         return None
 
 
+async def _enter_video_via_sidebar(page: Page, input_el):
+    """走側欄的「影片」入口（2026-08-22 新版介面）。
+
+    回 (是否成功, 輸入框)。點進去之後把可見的輸入提示記進 log —— Google 這個
+    介面改得很勤，下次再變時那份就是線索，不必重新摸索。
+    """
+    try:
+        if not await page.query_selector(SELECTORS["sidebar_video"]):
+            return False, input_el
+        await page.click(SELECTORS["sidebar_video"], timeout=10_000)
+        await asyncio.sleep(2.5)
+        refreshed = await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=15_000)
+        hint = await page.evaluate(
+            """(sel) => {const e = document.querySelector(sel);
+                 return e ? (e.getAttribute('data-placeholder')
+                             || e.getAttribute('aria-label') || '') : ''}""",
+            SELECTORS["input"])
+        logger.info("已從側欄進入影片頁，輸入框提示：%r", hint)
+        return True, (refreshed or input_el)
+    except Exception as e:
+        logger.warning("走側欄進影片頁失敗：%s", e)
+        return False, input_el
+
+
+async def _ensure_video_mode(page: Page, input_el, worker_id: int | None = None):
+    """進影片模式：先試側欄的「影片」入口，再退回工具選單那一項。
+
+    2026-08-22 實測 Gemini 兩版並行 —— worker 2 的側欄有「影片」「即時通訊」
+    「Spark BETA」，worker 0 沒有。而舊版工具選單裡的「建立影片」點了模式不黏
+    （結果生出一張靜態圖）。所以兩條都留，哪個帳號拿到哪一版都跑得動。
+    """
+    ok, input_el = await _enter_video_via_sidebar(page, input_el)
+    if ok:
+        return True, input_el
+    logger.info("側欄沒有影片入口（或進不去），退回工具選單")
+    return await _ensure_tool_mode(
+        page, input_el, "create_video", "Create video", "video", worker_id)
+
+
 async def _ensure_tool_mode(page: Page, input_el, selector_key: str, label: str,
                             tag: str, worker_id: int | None = None):
     """進某個工具模式;第一次失敗就硬重置頁面再試一次。理由同圖片那條:
@@ -551,8 +591,11 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
         await asyncio.sleep(1)
         await _dismiss_onboarding(page)
 
-        switched, input_el = await _ensure_tool_mode(
-            page, input_el, mode_key, mode_label, tag, worker_id)
+        if mode_key == "create_video":
+            switched, input_el = await _ensure_video_mode(page, input_el, worker_id)
+        else:
+            switched, input_el = await _ensure_tool_mode(
+                page, input_el, mode_key, mode_label, tag, worker_id)
         if not switched:
             return _error("browser_error",
                           f"進不了{mode_label}模式（工具選單裡找不到那一項，可能是帳號"

@@ -96,14 +96,22 @@ def _identify_caller(request: Request | None) -> str:
     return "unknown key"
 
 
-def _first_inline_image(body: dict) -> str | None:
-    """從 generateContent 的 contents 撈出參考圖的 base64。
+# 一次最多送幾張參考圖。平台那邊沒有撞到硬上限,這個數字是保險絲:每張都要
+# 上傳、都要等預覽出現,張數失控會把 worker 卡住好幾分鐘。漫畫產線一頁最多
+# 用到五、六張,8 是留餘裕。
+MAX_REFERENCE_IMAGES = 8
 
-    由後往前找（多輪對話時最後一則才是這次要編的圖），一次只取一張——
-    瀏覽器路的 edit 流程只上傳得了一張。`inlineData` / `inline_data` 兩種
-    寫法都收（Google SDK 送前者，手刻 JSON 的呼叫端常送後者）。
+
+def _inline_images(body: dict) -> list[tuple[str, str]]:
+    """從 generateContent 的 contents 撈出**這一輪全部**的參考圖。
+
+    回傳 [(base64, mime), ...],順序就是 parts 裡的順序——呼叫端的 prompt 是照
+    「image 1 是畫風錨、image 2 是角色」指名的,順序換掉等於指錯人。多輪對話只
+    看最後一則帶圖的 content(那是這次要編的);`inlineData` 與 `inline_data` 兩
+    種寫法都收(Google SDK 送前者,手刻 JSON 的呼叫端常送後者)。
     """
     for content in reversed(body.get("contents") or []):
+        found: list[tuple[str, str]] = []
         for part in (content or {}).get("parts") or []:
             if not isinstance(part, dict):
                 continue
@@ -111,8 +119,10 @@ def _first_inline_image(body: dict) -> str | None:
             data = inline.get("data")
             mime = inline.get("mimeType") or inline.get("mime_type") or ""
             if data and str(mime).startswith("image/"):
-                return data
-    return None
+                found.append((data, str(mime)))
+        if found:
+            return found[:MAX_REFERENCE_IMAGES]
+    return []
 
 
 async def _dispatch_and_log(
@@ -200,14 +210,24 @@ class ChatFileRequest(BaseModel):
 class EditRequest(BaseModel):
     """以參考圖編輯模式生成圖片。
 
-    reference_image 接受
+    reference_image / reference_images 都接受
       - data URL（data:image/jpeg;base64,xxx）
       - 純 base64 字串
-    最大 10 MB（base64 編碼後）
+    單張最大 10 MB（base64 編碼後）
+
+    送多張時用 reference_images,順序有意義:呼叫端的 prompt 通常照
+    「image 1 是畫風、image 2 是角色」指名。舊的單數欄位留著沒動,
+    ai-brain-site 與 catime 都還在打它。
     """
     prompt: str
-    reference_image: str
+    reference_image: str = ""
+    reference_images: list[str] = []
     timeout: int = settings.default_timeout
+
+    def refs(self) -> list[str]:
+        """兩個欄位收斂成一份清單,複數優先。"""
+        return list(self.reference_images) or ([self.reference_image]
+                                               if self.reference_image else [])
 
 
 # ── 端點 ──
@@ -244,18 +264,20 @@ def _has_valid_key(request: Request) -> bool:
     return _is_valid_api_key(key)
 
 
-async def _maybe_official(prompt: str, request: Request, reference_image: str | None = None):
+async def _maybe_official(prompt: str, request: Request,
+                          reference_images: list[str] | str | None = None):
     """試官方 Gemini API。回傳 {success, images, via} 或 None（未啟用/未授權/失敗）。
     付費路 → 一定要帶有效 key，否則直接跳過（免費瀏覽器路照常開放）。"""
     if not settings.gemini_official_api_key:
         return None
     if not _has_valid_key(request):
         return None
-    img_b64, mime = (None, "image/png")
-    if reference_image:
-        img_b64, mime = _strip_data_url(reference_image)
+    refs = reference_images or []
+    if isinstance(refs, str):
+        refs = [refs]
+    images = [_strip_data_url(r) for r in refs]
     try:
-        imgs = await official_generate(prompt, img_b64, mime)
+        imgs = await official_generate(prompt, images)
     except Exception as e:  # noqa: BLE001 — fallback 不該讓整個請求爆
         logger.warning("官方 API fallback 失敗：%s", e)
         return None
@@ -336,11 +358,16 @@ async def api_chat_file(req: ChatFileRequest, request: Request):
 async def api_edit(req: EditRequest, request: Request, official: int = Query(default=0)):
     """以參考圖編輯模式生成圖片"""
     _verify_api_key(request, None)
-    if not req.reference_image:
-        raise HTTPException(status_code=400, detail="reference_image 不能為空")
+    refs = req.refs()
+    if not refs:
+        raise HTTPException(status_code=400,
+                            detail="reference_image / reference_images 至少要有一張")
+    if len(refs) > MAX_REFERENCE_IMAGES:
+        raise HTTPException(status_code=400,
+                            detail=f"參考圖最多 {MAX_REFERENCE_IMAGES} 張,收到 {len(refs)} 張")
     # primary 模式 or ?official=1 → 直接走官方 API，不跑瀏覽器
     if official or settings.gemini_official_mode == "primary":
-        r = await _maybe_official(req.prompt, request, req.reference_image)
+        r = await _maybe_official(req.prompt, request, refs)
         if r:
             return r
     try:
@@ -349,22 +376,22 @@ async def api_edit(req: EditRequest, request: Request, official: int = Query(def
             req.prompt,
             "",
             req.timeout,
-            extra={"reference_image": req.reference_image},
+            extra={"reference_images": refs},
             request=request,
         )
     except QueueFullError:
-        r = await _maybe_official(req.prompt, request, req.reference_image)
+        r = await _maybe_official(req.prompt, request, refs)
         if r:
             return r
         raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
     except asyncio.TimeoutError:
-        r = await _maybe_official(req.prompt, request, req.reference_image)
+        r = await _maybe_official(req.prompt, request, refs)
         if r:
             return r
         raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
     # 瀏覽器回來但沒成功 → fallback 官方
     if not result.get("success") and settings.gemini_official_mode == "fallback":
-        r = await _maybe_official(req.prompt, request, req.reference_image)
+        r = await _maybe_official(req.prompt, request, refs)
         if r:
             return r
     return result
@@ -492,6 +519,12 @@ async def _generate_content_impl(
     is_image = (
         response_mime.lower().startswith("image/")
         or "image" in modalities_lower
+        # 影像模型本來就只會回圖,不能要求呼叫端一定要多送 responseModalities。
+        # Google 官方 API 對 gemini-*-image-* 不加那個欄位也照樣回圖,我們這邊
+        # 少了這一條就會把「送圖要圖」的請求當成純聊天回文字,而且 HTTP 200。
+        # (2026-08-21:ai-comic-starter 的漫畫產線就是只送 imageConfig 不送
+        #  responseModalities,不認模型名的話它一張圖都拿不到。)
+        or "image" in (model or "").lower()
     )
 
     # 強制 JSON 回應（模擬 responseMimeType: application/json）
@@ -507,12 +540,14 @@ async def _generate_content_impl(
     # inlineData 換成 "[inline_data:image/png]" 這串字，圖的位元組就在那一步
     # 掉了，等於「拿純文字 prompt 生圖」，呼叫端送的參考圖形同沒送（而且是
     # HTTP 200，沒有任何錯誤）。ai-brain-site 的格莉奇日記踩了整整一季。
-    ref_image = _first_inline_image(body) if is_image else None
-    if ref_image:
+    ref_images = _inline_images(body) if is_image else []
+    if ref_images:
         # 佔位字串留著只會干擾模型，走 edit 時圖是真的送進去的
         prompt = re.sub(r"\[inline_data:[^\]]*\]\s*", "", prompt).strip()
-        kind, extra = "edit", {"reference_image": ref_image}
-        logger.info("帶參考圖(%d chars base64)，改走 edit", len(ref_image))
+        kind = "edit"
+        extra = {"reference_images": [f"data:{m};base64,{d}" for d, m in ref_images]}
+        logger.info("帶 %d 張參考圖(共 %d chars base64)，改走 edit",
+                    len(ref_images), sum(len(d) for d, _ in ref_images))
     else:
         kind, extra = ("generate" if is_image else "chat"), None
     timeout = settings.default_timeout

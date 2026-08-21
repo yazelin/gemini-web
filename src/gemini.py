@@ -299,6 +299,24 @@ async def _enter_create_image_mode(page: Page, input_el):
     回傳 (是否成功, 輸入框)。失敗不丟例外——呼叫端會硬重置頁面再試一次,
     兩次都失敗才退回 prefix fallback。
     """
+    return await _enter_tool_mode(page, input_el, "create_image", "Create image")
+
+
+async def _enter_create_video_mode(page: Page, input_el):
+    """點 Tools → 建立影片,進入影片生成模式(Veo)。
+
+    跟圖片走同一個工具選單、同一套流程,只有選單項不同。
+    """
+    return await _enter_tool_mode(page, input_el, "create_video", "Create video")
+
+
+async def _enter_tool_mode(page: Page, input_el, selector_key: str, label: str):
+    """點 Tools → 選單裡的某一項,進入該工具模式。
+
+    圖片與影片共用。原本只有圖片一條,抽出來是因為影片除了選單項不同以外
+    每一步都一樣——包括「點完選單不會自動關、要按 Esc 才不會擋住輸入框」
+    這種踩過的雷。
+    """
     try:
         # Debug: 列出頁面上所有按鈕(頁面停在舊對話時,這份清單就是唯一線索)
         all_btns = await page.evaluate("""() => {
@@ -321,10 +339,10 @@ async def _enter_create_image_mode(page: Page, input_el):
         await asyncio.sleep(1.5)
         # 等 Create image 按鈕出現
         create_img_btn = await page.wait_for_selector(
-            SELECTORS["create_image"], state="visible", timeout=5_000
+            SELECTORS[selector_key], state="visible", timeout=5_000
         )
         if not create_img_btn:
-            logger.warning("找不到 Create image 按鈕")
+            logger.warning("找不到 %s 按鈕", label)
             await page.keyboard.press("Escape")
             await asyncio.sleep(0.5)
             return False, input_el
@@ -337,7 +355,7 @@ async def _enter_create_image_mode(page: Page, input_el):
         # Esc 只關選單不會取消模式（已實機驗證）。
         await page.keyboard.press("Escape")
         await asyncio.sleep(1)
-        logger.info("已切換至 Create image 模式")
+        logger.info("已切換至 %s 模式", label)
         # 重新取得輸入框（模式切換後可能會刷新）
         refreshed = await page.wait_for_selector(
             SELECTORS["input"], state="visible", timeout=10_000
@@ -345,7 +363,7 @@ async def _enter_create_image_mode(page: Page, input_el):
         return True, (refreshed or input_el)
 
     except Exception as e:
-        logger.warning("切換 Create image 模式失敗：%s", e)
+        logger.warning("切換 %s 模式失敗：%s", label, e)
         # 確保關閉可能開啟的選單
         try:
             await page.keyboard.press("Escape")
@@ -353,6 +371,121 @@ async def _enter_create_image_mode(page: Page, input_el):
         except Exception:
             pass
         return False, input_el
+
+
+async def _ensure_create_video_mode(page: Page, input_el, worker_id: int | None = None):
+    """進影片生成模式;第一次失敗就硬重置頁面再試一次。理由同圖片那條。"""
+    switched, input_el = await _enter_create_video_mode(page, input_el)
+    if switched:
+        return True, input_el
+
+    await dump_page_state(page, "video-mode", worker_id)
+    logger.warning("進不了 Create video 模式,硬重置頁面後重試一次")
+    if not await new_chat(page):
+        return False, input_el
+    await asyncio.sleep(1)
+    retry_input = await page.wait_for_selector(
+        SELECTORS["input"], state="visible", timeout=15_000
+    )
+    if not retry_input:
+        return False, input_el
+    await _dismiss_onboarding(page)
+    switched, input_el = await _enter_create_video_mode(page, retry_input)
+    if switched:
+        logger.info("重置後成功進入 Create video 模式")
+    return switched, input_el
+
+
+async def generate_video(page: Page, prompt: str, timeout: int = 600,
+                         worker_id: int | None = None) -> dict:
+    """在 Gemini 頁面產生影片(Veo)並把 mp4 抓下來
+
+    Veo 比生圖慢得多(數分鐘),所以預設 timeout 是 600 秒而不是 60。
+
+    回傳 {"success": True, "video": <base64>, "mime": ..., "elapsed_seconds": ...}
+    或 {"success": False, "error": ..., "message": ...}
+    """
+    import base64
+
+    start = time.time()
+    try:
+        input_el = await page.wait_for_selector(
+            SELECTORS["input"], state="visible", timeout=15_000)
+        if not input_el:
+            return _error("browser_error", "找不到輸入框")
+        await asyncio.sleep(1)
+        await _dismiss_onboarding(page)
+
+        switched, input_el = await _ensure_create_video_mode(page, input_el, worker_id)
+        if not switched:
+            return _error("browser_error",
+                          "進不了影片生成模式（工具選單裡找不到「建立影片」，"
+                          "可能是帳號沒有這個功能，或選單改版了；診斷截圖見 diagnostics/）",
+                          round(time.time() - start, 1))
+
+        await input_el.click()
+        await page.keyboard.type(prompt)
+        await asyncio.sleep(0.5)
+        await page.keyboard.press("Enter")
+        logger.info("影片 prompt 已送出，開始等待（最長 %d 秒）", timeout)
+
+        # 等影片元素出現
+        deadline = time.monotonic() + timeout
+        video_el = None
+        while time.monotonic() < deadline:
+            video_el = await page.query_selector(SELECTORS["videos"])
+            if video_el:
+                break
+            await asyncio.sleep(5)
+
+        elapsed = round(time.time() - start, 1)
+        if not video_el:
+            # 抓不到就存證：影片結果的 DOM 還沒實地驗過，這份截圖與元素清單
+            # 就是修選擇器的依據
+            await dump_page_state(page, "video-result", worker_id)
+            media = await page.evaluate("""() => Array.from(
+                document.querySelectorAll('video, source, [class*=video], [class*=Video]')
+            ).slice(0, 20).map(e => ({tag: e.tagName, cls: (e.className||'').toString().slice(0,60),
+                                      src: (e.getAttribute('src')||'').slice(0,80)}))""")
+            logger.warning("等不到影片元素，頁面上的影片相關節點：%s",
+                           json.dumps(media, ensure_ascii=False)[:800])
+            return _error("timeout", f"等了 {timeout} 秒沒等到影片（診斷截圖見 diagnostics/）", elapsed)
+
+        # 優先用下載鈕拿原檔；拿不到就退回 src
+        try:
+            btn = await page.query_selector(SELECTORS["download_video"])
+            if btn:
+                async with page.expect_download(timeout=300_000) as info:
+                    await btn.click()
+                dl = await info.value
+                path = await dl.path()
+                if path:
+                    data = Path(path).read_bytes()
+                    return {"success": True, "mime": "video/mp4",
+                            "video": base64.b64encode(data).decode("ascii"),
+                            "prompt": prompt, "elapsed_seconds": elapsed}
+        except Exception as e:
+            logger.warning("影片下載鈕失敗，改用 src：%s", e)
+
+        src = await video_el.get_attribute("src")
+        if not src:
+            src_el = await page.query_selector("video source[src]")
+            src = await src_el.get_attribute("src") if src_el else None
+        if not src:
+            await dump_page_state(page, "video-src", worker_id)
+            return _error("browser_error", "影片元素存在但抓不到 src（診斷截圖見 diagnostics/）", elapsed)
+
+        resp = await page.request.get(src)
+        if not resp.ok:
+            return _error("browser_error", f"影片下載失敗 HTTP {resp.status}", elapsed)
+        data = await resp.body()
+        return {"success": True, "mime": "video/mp4",
+                "video": base64.b64encode(data).decode("ascii"),
+                "prompt": prompt, "elapsed_seconds": elapsed}
+
+    except Exception as e:
+        logger.error("影片生成失敗：%s", e, exc_info=True)
+        return _error("browser_error", str(e)[:300], round(time.time() - start, 1))
 
 
 async def _ensure_create_image_mode(page: Page, input_el, worker_id: int | None = None):

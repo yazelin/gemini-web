@@ -318,6 +318,29 @@ async def api_generate(req: GenerateRequest, request: Request, official: int = Q
     return result
 
 
+class VideoRequest(BaseModel):
+    prompt: str
+    # Veo 比生圖慢得多，預設給 10 分鐘
+    timeout: int = 600
+
+
+@app.post("/api/video")
+async def api_video(req: VideoRequest, request: Request):
+    """產生影片（Veo）
+
+    走的是 Gemini 網頁工具選單裡的「建立影片」，跟生圖同一條瀏覽器路。
+    同步等到影片出來才回——Veo 要數分鐘，呼叫端的 timeout 要放寬。
+    影片以 base64 回傳（欄位 `video`），跟圖片那條的形狀一致。
+    """
+    _verify_api_key(request, None)
+    try:
+        return await _dispatch_and_log("video", req.prompt, "", req.timeout, request=request)
+    except QueueFullError:
+        raise HTTPException(status_code=429, detail="佇列已滿，請稍後再試")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail=f"請求超時（{req.timeout}秒）")
+
+
 @app.post("/api/chat")
 async def api_chat(req: ChatRequest, request: Request):
     """文字對話"""

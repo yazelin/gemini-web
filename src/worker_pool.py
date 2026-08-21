@@ -9,8 +9,9 @@ from typing import Any
 
 from .browser import BrowserManager
 from .config import settings, get_worker_profile_dir
-from .gemini import (chat, dump_page_state, generate_image, generate_video, new_chat, page_ready,
-                     probe_video_capability,
+from .gemini import (chat, dump_page_state, generate_image, generate_music,
+                     generate_video, new_chat, page_ready,
+                     probe_music_capability, probe_video_capability,
                      switch_model)
 from .selectors import IMAGE_FALLBACK_MAP
 
@@ -55,9 +56,10 @@ class WorkerPool:
         # 關鍵:_release 是同步的,放進 finally 裡不會被 cancel 打斷 → worker 一定
         # 還得回來,不會像舊版 lock.acquire()+cancel 那樣洩漏鎖把 worker 卡死。
         self._idle_ids: set[int] = set()
-        # 每個帳號會不會做影片。None = 還沒探測過。Veo 只給付費層，而家庭群組
-        # 分享的方案從畫面上看不出來，所以只能實際開選單看那一項在不在。
-        self._can_video: dict[int, bool | None] = {}
+        # 每個帳號會不會做某件事（"video" / "music"）。None = 還沒探測過。
+        # 帳號等級從畫面上看不出來（家庭群組分享的方案仍會顯示「升級」），
+        # 所以只能實際開選單看那一項在不在。
+        self._can: dict[str, dict[int, bool | None]] = {}
         self._free: asyncio.Event | None = None
         # 每個 worker 的「待完成 reset」task。下次請求進來時必須先 await
         # 這個 task,確保上一次的對話已經乾淨重置才開始新請求。
@@ -94,7 +96,7 @@ class WorkerPool:
         """分配請求到空閒 worker，全忙則等待
 
         Args:
-            kind: "chat" / "chat_file" / "generate" / "video" / "edit"
+            kind: "chat" / "chat_file" / "generate" / "video" / "music" / "edit"
             extra: edit 模式用，dict 含 reference_images (base64 或 data URL 字串的
                    list,順序有意義);舊的單數 reference_image 也還收
 
@@ -106,14 +108,15 @@ class WorkerPool:
             raise QueueFullError(f"等待佇列已滿（{self._max_waiting}）")
 
         allowed = None
-        if kind == "video":
-            await self.ensure_video_capabilities()
-            allowed = self.video_capable_ids()
+        if kind in ("video", "music"):
+            await self.ensure_capabilities(kind)
+            allowed = self.capable_ids(kind)
             if not allowed:
+                item = {"video": "建立影片", "music": "創作音樂"}[kind]
                 raise NoCapableWorkerError(
-                    "沒有任何帳號的工具選單裡有「建立影片」。Veo 只給付費層，"
-                    "請把有訂閱的 Google 帳號登進其中一個 worker profile。")
-            logger.info("影片請求，可用帳號：%s", sorted(allowed))
+                    f"沒有任何帳號的工具選單裡有「{item}」。這類功能綁帳號方案，"
+                    "請把有該功能的 Google 帳號登進其中一個 worker profile。")
+            logger.info("%s 請求，可用帳號：%s", kind, sorted(allowed))
 
         self._waiting += 1
         try:
@@ -245,29 +248,32 @@ class WorkerPool:
         logger.warning("Worker %d 請求中斷,排入頁面重置", worker_id)
         self._pending_resets[worker_id] = asyncio.create_task(new_chat(bm.page))
 
-    async def ensure_video_capabilities(self, force: bool = False) -> dict[int, bool | None]:
-        """把還沒探測過的帳號逐一探測一次，回傳每個帳號會不會做影片。
+    async def ensure_capabilities(self, kind: str = "video",
+                                  force: bool = False) -> dict[int, bool | None]:
+        """把還沒探測過的帳號逐一探測一次，回傳每個帳號會不會做這件事。
 
         一個一個取、探完就還回去，所以不會卡住其他請求太久（每個約兩秒）。
         探測失敗（連工具選單都打不開）記成 None 而不是 False —— 那是頁面卡住，
         不是帳號沒能力，下次還要再試。
         """
+        probe = {"video": probe_video_capability,
+                 "music": probe_music_capability}[kind]
+        cache = self._can.setdefault(kind, {})
         for wid in range(self._count):
-            if not force and self._can_video.get(wid) is not None:
+            if not force and cache.get(wid) is not None:
                 continue
             acquired = await self._acquire({wid})
             try:
                 page = await self._ensure_page_ready(acquired)
-                self._can_video[acquired] = (
-                    await probe_video_capability(page) if page else None)
-                logger.info("worker %d 影片能力：%s", acquired, self._can_video[acquired])
+                cache[acquired] = await probe(page) if page else None
+                logger.info("worker %d 的「%s」能力：%s", acquired, kind, cache[acquired])
             finally:
                 self._schedule_reset(acquired)
                 self._release(acquired)
-        return dict(self._can_video)
+        return dict(cache)
 
-    def video_capable_ids(self) -> set[int]:
-        return {w for w, ok in self._can_video.items() if ok}
+    def capable_ids(self, kind: str) -> set[int]:
+        return {w for w, ok in self._can.get(kind, {}).items() if ok}
 
     async def _acquire_and_run(self, kind: str, prompt: str, model: str, timeout: int,
                                extra: dict | None = None, ctx: dict | None = None,
@@ -334,6 +340,8 @@ class WorkerPool:
             )
         elif kind == "video":
             result = await generate_video(page, prompt, timeout, worker_id=worker_id)
+        elif kind == "music":
+            result = await generate_music(page, prompt, timeout, worker_id=worker_id)
         elif kind == "edit":
             from .gemini import edit_image
             refs = (extra or {}).get("reference_images") or []

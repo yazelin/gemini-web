@@ -94,7 +94,7 @@ class TestCapabilityRouting:
         p = WorkerPool.__new__(WorkerPool)
         p._count = count
         p._idle_ids = set(range(count))
-        p._can_video = {}
+        p._can = {}
         p._mode = "spillover"
         p._next = 0
         return p
@@ -107,17 +107,24 @@ class TestCapabilityRouting:
         p = self._pool()
         assert p._select() in range(4)
 
-    def test_video_capable_ids_only_counts_true(self):
+    def test_capable_ids_only_counts_true(self):
         p = self._pool()
-        p._can_video = {0: False, 1: True, 2: None, 3: True}
-        assert p.video_capable_ids() == {1, 3}
+        p._can = {"video": {0: False, 1: True, 2: None, 3: True}}
+        assert p.capable_ids("video") == {1, 3}
+
+    def test_capabilities_are_tracked_per_kind(self):
+        """影片與音樂是兩件事，四個帳號都有音樂但只有一個有影片"""
+        p = self._pool()
+        p._can = {"video": {0: False, 2: True}, "music": {0: True, 2: True}}
+        assert p.capable_ids("video") == {2}
+        assert p.capable_ids("music") == {0, 2}
 
     def test_unknown_capability_is_not_treated_as_no(self):
         """探測失敗（頁面卡住）記 None，下次還要再試，不能當成「這帳號不行」"""
         p = self._pool()
-        p._can_video = {0: None}
-        assert 0 not in p.video_capable_ids()
-        assert p._can_video.get(0) is not False
+        p._can = {"video": {0: None}}
+        assert 0 not in p.capable_ids("video")
+        assert p._can["video"].get(0) is not False
 
     @pytest.mark.asyncio
     async def test_no_capable_worker_is_503(self, mock_worker_pool):
@@ -130,3 +137,52 @@ class TestCapabilityRouting:
             resp = await c.post("/api/video", json={"prompt": "x"})
         assert resp.status_code == 503
         assert "建立影片" in resp.json()["detail"]
+
+
+class TestMusicEndpoint:
+    """創作音樂 —— 跟影片走同一條通用流程，只有選單項與結果元素不同"""
+
+    def test_create_music_selector_covers_the_menu_label(self):
+        from src.selectors import SELECTORS
+        assert "創作音樂" in SELECTORS["create_music"]
+        assert ".cdk-overlay-container" in SELECTORS["create_music"]
+
+    def test_audio_result_selectors_exist(self):
+        from src.selectors import SELECTORS
+        assert "audio" in SELECTORS["audios"]
+        assert "download_audio" in SELECTORS
+
+    @pytest.mark.asyncio
+    async def test_missing_prompt_is_422(self):
+        from src.main import app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/api/music", json={})
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_success_returns_base64_audio(self, mock_worker_pool):
+        mock_worker_pool.dispatch = AsyncMock(return_value={
+            "success": True, "audio": "AAAA", "mime": "audio/mpeg",
+            "prompt": "輕快的烏克麗麗", "elapsed_seconds": 42.0,
+        })
+        from src.main import app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/api/music", json={"prompt": "輕快的烏克麗麗"})
+        assert resp.status_code == 200
+        d = resp.json()
+        assert d["success"] is True and d["mime"] == "audio/mpeg"
+        assert mock_worker_pool.dispatch.await_args.args[0] == "music"
+
+    @pytest.mark.asyncio
+    async def test_no_capable_worker_is_503_and_names_the_menu_item(self, mock_worker_pool):
+        from src.worker_pool import NoCapableWorkerError
+        mock_worker_pool.dispatch = AsyncMock(
+            side_effect=NoCapableWorkerError("沒有任何帳號的工具選單裡有「創作音樂」"))
+        from src.main import app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/api/music", json={"prompt": "x"})
+        assert resp.status_code == 503
+        assert "創作音樂" in resp.json()["detail"]

@@ -465,3 +465,18 @@ curl -X POST -H "x-goog-api-key: YOUR_KEY" http://localhost:8070/api/capabilitie
 
 `null` 是「探測時頁面卡住」，不是「沒能力」——下次還會再試。一個都沒有時
 `/api/video` 回 **503** 並說明原因，不會白跑一趟。
+
+### POST /api/music
+
+產生音樂。走工具選單裡的「創作音樂」，跟影片同一條通用流程，只有選單項與結果元素不同。
+
+```bash
+curl -X POST http://localhost:8070/api/music \
+  -H "Content-Type: application/json" -H "x-goog-api-key: YOUR_KEY" \
+  -d '{"prompt": "輕快的烏克麗麗，適合寫程式時聽"}'
+```
+
+回 `{"success", "audio", "mime", "prompt", "elapsed_seconds"}`，`audio` 是 base64 音檔。
+
+能力偵測與影片共用同一套：`/api/capabilities` 會同時報 `video` 與 `music` 兩種，
+派工也各自只挑做得到的帳號。

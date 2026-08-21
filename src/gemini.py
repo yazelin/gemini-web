@@ -302,14 +302,6 @@ async def _enter_create_image_mode(page: Page, input_el):
     return await _enter_tool_mode(page, input_el, "create_image", "Create image")
 
 
-async def _enter_create_video_mode(page: Page, input_el):
-    """點 Tools → 建立影片,進入影片生成模式(Veo)。
-
-    跟圖片走同一個工具選單、同一套流程,只有選單項不同。
-    """
-    return await _enter_tool_mode(page, input_el, "create_video", "Create video")
-
-
 async def _enter_tool_mode(page: Page, input_el, selector_key: str, label: str):
     """點 Tools → 選單裡的某一項,進入該工具模式。
 
@@ -374,7 +366,17 @@ async def _enter_tool_mode(page: Page, input_el, selector_key: str, label: str):
 
 
 async def probe_video_capability(page: Page) -> bool | None:
-    """看這個帳號的工具選單裡有沒有「建立影片」。
+    """看這個帳號的工具選單裡有沒有「建立影片」。（薄包裝，見 probe_tool_capability）"""
+    return await probe_tool_capability(page, "create_video", "建立影片")
+
+
+async def probe_music_capability(page: Page) -> bool | None:
+    """看這個帳號的工具選單裡有沒有「創作音樂」。"""
+    return await probe_tool_capability(page, "create_music", "創作音樂")
+
+
+async def probe_tool_capability(page: Page, selector_key: str, label: str) -> bool | None:
+    """看這個帳號的工具選單裡有沒有某一項工具。
 
     Veo 只給付費層，但**不能用「升級」按鈕在不在來判斷** —— Google One 家庭
     群組分享的方案，帳號畫面上仍可能顯示升級。唯一可靠的是直接開選單看那一項
@@ -391,19 +393,19 @@ async def probe_video_capability(page: Page) -> bool | None:
             return None
         await tools_btn.click()
         await asyncio.sleep(1.5)
-        found = await page.query_selector(SELECTORS["create_video"])
+        found = await page.query_selector(SELECTORS[selector_key])
         # 順手記下選單裡實際有哪些項目，選單改名時這份 log 就是線索
         items = await page.evaluate("""() => Array.from(
             document.querySelectorAll(".cdk-overlay-container [role='menuitemcheckbox'], "
                                       + ".cdk-overlay-container [role='menuitem']")
         ).map(e => e.innerText.trim().slice(0, 30)).filter(Boolean)""")
-        logger.info("工具選單項目：%s → 有影片=%s",
-                    json.dumps(items, ensure_ascii=False)[:300], bool(found))
+        logger.info("工具選單項目：%s → 有「%s」=%s",
+                    json.dumps(items, ensure_ascii=False)[:300], label, bool(found))
         await page.keyboard.press("Escape")
         await asyncio.sleep(0.5)
         return bool(found)
     except Exception as e:
-        logger.warning("探測影片能力失敗：%s", e)
+        logger.warning("探測「%s」能力失敗：%s", label, e)
         try:
             await page.keyboard.press("Escape")
         except Exception:
@@ -411,14 +413,16 @@ async def probe_video_capability(page: Page) -> bool | None:
         return None
 
 
-async def _ensure_create_video_mode(page: Page, input_el, worker_id: int | None = None):
-    """進影片生成模式;第一次失敗就硬重置頁面再試一次。理由同圖片那條。"""
-    switched, input_el = await _enter_create_video_mode(page, input_el)
+async def _ensure_tool_mode(page: Page, input_el, selector_key: str, label: str,
+                            tag: str, worker_id: int | None = None):
+    """進某個工具模式;第一次失敗就硬重置頁面再試一次。理由同圖片那條:
+    頁面停在舊對話時選單會抓錯,而那個髒狀態不會自己好。"""
+    switched, input_el = await _enter_tool_mode(page, input_el, selector_key, label)
     if switched:
         return True, input_el
 
-    await dump_page_state(page, "video-mode", worker_id)
-    logger.warning("進不了 Create video 模式,硬重置頁面後重試一次")
+    await dump_page_state(page, f"{tag}-mode", worker_id)
+    logger.warning("進不了 %s 模式,硬重置頁面後重試一次", label)
     if not await new_chat(page):
         return False, input_el
     await asyncio.sleep(1)
@@ -428,9 +432,9 @@ async def _ensure_create_video_mode(page: Page, input_el, worker_id: int | None 
     if not retry_input:
         return False, input_el
     await _dismiss_onboarding(page)
-    switched, input_el = await _enter_create_video_mode(page, retry_input)
+    switched, input_el = await _enter_tool_mode(page, retry_input, selector_key, label)
     if switched:
-        logger.info("重置後成功進入 Create video 模式")
+        logger.info("重置後成功進入 %s 模式", label)
     return switched, input_el
 
 
@@ -438,10 +442,37 @@ async def generate_video(page: Page, prompt: str, timeout: int = 600,
                          worker_id: int | None = None) -> dict:
     """在 Gemini 頁面產生影片(Veo)並把 mp4 抓下來
 
-    Veo 比生圖慢得多(數分鐘),所以預設 timeout 是 600 秒而不是 60。
+    回傳 {"success": True, "video": <base64>, "mime": "video/mp4", ...}
+    """
+    return await _generate_media(
+        page, prompt, timeout, worker_id,
+        mode_key="create_video", mode_label="Create video",
+        result_key="videos", download_key="download_video",
+        field="video", mime="video/mp4", tag="video", el="video")
 
-    回傳 {"success": True, "video": <base64>, "mime": ..., "elapsed_seconds": ...}
-    或 {"success": False, "error": ..., "message": ...}
+
+async def generate_music(page: Page, prompt: str, timeout: int = 600,
+                         worker_id: int | None = None) -> dict:
+    """在 Gemini 頁面產生音樂並把音檔抓下來
+
+    回傳 {"success": True, "audio": <base64>, "mime": "audio/mpeg", ...}
+    """
+    return await _generate_media(
+        page, prompt, timeout, worker_id,
+        mode_key="create_music", mode_label="Create music",
+        result_key="audios", download_key="download_audio",
+        field="audio", mime="audio/mpeg", tag="music", el="audio")
+
+
+async def _generate_media(page: Page, prompt: str, timeout: int,
+                          worker_id: int | None, *, mode_key: str, mode_label: str,
+                          result_key: str, download_key: str, field: str,
+                          mime: str, tag: str, el: str) -> dict:
+    """影片與音樂共用的流程：進模式 → 送 prompt → 等媒體元素 → 抓檔案
+
+    兩者除了選單項與結果元素之外完全一樣，所以只有一份。抓不到結果時會
+    dump_page_state 存證並把頁面上相關節點記進 log —— 選擇器是猜的，這份
+    輸出就是修它的依據。
     """
     import base64
 
@@ -454,24 +485,25 @@ async def generate_video(page: Page, prompt: str, timeout: int = 600,
         await asyncio.sleep(1)
         await _dismiss_onboarding(page)
 
-        switched, input_el = await _ensure_create_video_mode(page, input_el, worker_id)
+        switched, input_el = await _ensure_tool_mode(
+            page, input_el, mode_key, mode_label, tag, worker_id)
         if not switched:
             return _error("browser_error",
-                          "進不了影片生成模式（工具選單裡找不到「建立影片」，"
-                          "可能是帳號沒有這個功能，或選單改版了；診斷截圖見 diagnostics/）",
+                          f"進不了{mode_label}模式（工具選單裡找不到那一項，可能是帳號"
+                          "沒有這個功能，或選單改版了；診斷截圖見 diagnostics/）",
                           round(time.time() - start, 1))
 
         await input_el.click()
         await page.keyboard.type(prompt)
         await asyncio.sleep(0.5)
         await page.keyboard.press("Enter")
-        logger.info("影片 prompt 已送出，開始等待（最長 %d 秒）", timeout)
+        logger.info("%s prompt 已送出，開始等待（最長 %d 秒）", mode_label, timeout)
 
         # 等影片元素出現
         deadline = time.monotonic() + timeout
         video_el = None
         while time.monotonic() < deadline:
-            video_el = await page.query_selector(SELECTORS["videos"])
+            video_el = await page.query_selector(SELECTORS[result_key])
             if video_el:
                 break
             await asyncio.sleep(5)
@@ -480,18 +512,19 @@ async def generate_video(page: Page, prompt: str, timeout: int = 600,
         if not video_el:
             # 抓不到就存證：影片結果的 DOM 還沒實地驗過，這份截圖與元素清單
             # 就是修選擇器的依據
-            await dump_page_state(page, "video-result", worker_id)
-            media = await page.evaluate("""() => Array.from(
-                document.querySelectorAll('video, source, [class*=video], [class*=Video]')
-            ).slice(0, 20).map(e => ({tag: e.tagName, cls: (e.className||'').toString().slice(0,60),
-                                      src: (e.getAttribute('src')||'').slice(0,80)}))""")
-            logger.warning("等不到影片元素，頁面上的影片相關節點：%s",
-                           json.dumps(media, ensure_ascii=False)[:800])
-            return _error("timeout", f"等了 {timeout} 秒沒等到影片（診斷截圖見 diagnostics/）", elapsed)
+            await dump_page_state(page, f"{tag}-result", worker_id)
+            media = await page.evaluate(
+                """(el) => Array.from(document.querySelectorAll(el + ', source, [class*=media]'))
+                     .slice(0, 20).map(e => ({tag: e.tagName,
+                        cls: (e.className||'').toString().slice(0,60),
+                        src: (e.getAttribute('src')||'').slice(0,80)}))""", el)
+            logger.warning("等不到%s元素，頁面上的相關節點：%s",
+                           mode_label, json.dumps(media, ensure_ascii=False)[:800])
+            return _error("timeout", f"等了 {timeout} 秒沒等到結果（診斷截圖見 diagnostics/）", elapsed)
 
         # 優先用下載鈕拿原檔；拿不到就退回 src
         try:
-            btn = await page.query_selector(SELECTORS["download_video"])
+            btn = await page.query_selector(SELECTORS[download_key])
             if btn:
                 async with page.expect_download(timeout=300_000) as info:
                     await btn.click()
@@ -499,30 +532,30 @@ async def generate_video(page: Page, prompt: str, timeout: int = 600,
                 path = await dl.path()
                 if path:
                     data = Path(path).read_bytes()
-                    return {"success": True, "mime": "video/mp4",
-                            "video": base64.b64encode(data).decode("ascii"),
+                    return {"success": True, "mime": mime,
+                            field: base64.b64encode(data).decode("ascii"),
                             "prompt": prompt, "elapsed_seconds": elapsed}
         except Exception as e:
-            logger.warning("影片下載鈕失敗，改用 src：%s", e)
+            logger.warning("%s 下載鈕失敗，改用 src：%s", mode_label, e)
 
         src = await video_el.get_attribute("src")
         if not src:
-            src_el = await page.query_selector("video source[src]")
+            src_el = await page.query_selector(f"{el} source[src]")
             src = await src_el.get_attribute("src") if src_el else None
         if not src:
-            await dump_page_state(page, "video-src", worker_id)
-            return _error("browser_error", "影片元素存在但抓不到 src（診斷截圖見 diagnostics/）", elapsed)
+            await dump_page_state(page, f"{tag}-src", worker_id)
+            return _error("browser_error", "媒體元素存在但抓不到 src（診斷截圖見 diagnostics/）", elapsed)
 
         resp = await page.request.get(src)
         if not resp.ok:
-            return _error("browser_error", f"影片下載失敗 HTTP {resp.status}", elapsed)
+            return _error("browser_error", f"下載失敗 HTTP {resp.status}", elapsed)
         data = await resp.body()
-        return {"success": True, "mime": "video/mp4",
-                "video": base64.b64encode(data).decode("ascii"),
+        return {"success": True, "mime": mime,
+                field: base64.b64encode(data).decode("ascii"),
                 "prompt": prompt, "elapsed_seconds": elapsed}
 
     except Exception as e:
-        logger.error("影片生成失敗：%s", e, exc_info=True)
+        logger.error("%s 生成失敗：%s", mode_label, e, exc_info=True)
         return _error("browser_error", str(e)[:300], round(time.time() - start, 1))
 
 

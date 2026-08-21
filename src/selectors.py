@@ -162,6 +162,15 @@ SELECTORS = {
         "video source[src]"
     ),
 
+    # 結果卡片下方的「顯示更多選項」。想知道裡面有沒有「延長」之類的東西
+    # （固定 10 秒／30 秒的唯一可能突破口）。
+    "result_more_options": (
+        "button[aria-label='顯示更多選項'], "
+        "button[aria-label*='顯示更多選項'], "
+        "button[aria-label*='More options'], "
+        "button[aria-label*='更多選項']"
+    ),
+
     # 「創作音樂」——同一個工具選單裡的另一項。四個帳號實測都有。
     "create_music": (
         ".cdk-overlay-container [role='menuitemcheckbox']:has-text('創作音樂'), "

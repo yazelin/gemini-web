@@ -33,6 +33,9 @@ class Settings:
     def __init__(self) -> None:
         # 瀏覽器
         self.headless: bool = _bool(os.getenv("HEADLESS"), False)
+        # 診斷用：生成完之後把結果卡片的「顯示更多選項」選單內容記進 log。
+        # 預設關閉——那是探測用的，不該常駐在正式路徑上多點一次選單。
+        self.probe_result_menu: bool = _bool(os.getenv("PROBE_RESULT_MENU"), False)
         self.profile_dir: str = os.getenv(
             "PROFILE_DIR", str(Path(_DEFAULT_DATA_DIR) / "profiles")
         )

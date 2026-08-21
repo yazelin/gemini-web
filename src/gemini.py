@@ -368,6 +368,36 @@ async def _enter_tool_mode(page: Page, input_el, selector_key: str, label: str):
         return False, input_el
 
 
+async def _log_result_menu(page: Page, label: str) -> None:
+    """把結果卡片的「顯示更多選項」選單內容記進 log（診斷用，預設不跑）
+
+    想知道裡面有沒有「延長影片」「繼續生成」之類的東西 —— 影片固定 10 秒、
+    音樂固定 30 秒，那是唯一可能的突破口。看完按 Esc 關掉，不影響後面下載。
+    """
+    try:
+        if not await page.query_selector(SELECTORS["result_more_options"]):
+            logger.info("[探測] %s：找不到「顯示更多選項」", label)
+            return
+        await page.click(SELECTORS["result_more_options"], timeout=10_000)
+        await asyncio.sleep(1.5)
+        items = await page.evaluate(
+            """() => Array.from(document.querySelectorAll(
+                 '.cdk-overlay-container [role=menuitem], .cdk-overlay-container button, '
+                 + '.cdk-overlay-container [role=menuitemcheckbox]'))
+               .map(e => ((e.innerText || '') + '|' + (e.getAttribute('aria-label') || '')).trim())
+               .filter(t => t && t !== '|').slice(0, 25)""")
+        logger.info("[探測] %s 的「顯示更多選項」選單：%s",
+                    label, json.dumps(items, ensure_ascii=False)[:700])
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.8)
+    except Exception as e:
+        logger.warning("[探測] 開更多選項失敗：%s", e)
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+
 async def probe_video_capability(page: Page) -> bool | None:
     """看這個帳號的工具選單裡有沒有「建立影片」。（薄包裝，見 probe_tool_capability）"""
     return await probe_tool_capability(page, "create_video", "建立影片")
@@ -547,6 +577,10 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
             logger.warning("等不到%s元素，頁面上的相關節點：%s",
                            mode_label, json.dumps(media, ensure_ascii=False)[:800])
             return _error("timeout", f"等了 {wait_budget} 秒沒等到結果（診斷截圖見 diagnostics/）", elapsed)
+
+        from .config import settings as _cfg
+        if _cfg.probe_result_menu:
+            await _log_result_menu(page, mode_label)
 
         # 優先用下載鈕拿原檔；拿不到就退回 src
         try:

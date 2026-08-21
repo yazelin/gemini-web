@@ -19,10 +19,13 @@ _ENDPOINT = (
 )
 
 
-def _call_sync(prompt: str, image_b64: str | None, mime: str) -> list[str]:
-    parts: list[dict] = []
-    if image_b64:
-        parts.append({"inlineData": {"mimeType": mime, "data": image_b64}})
+def _call_sync(images: list[tuple[str, str]], prompt: str) -> list[str]:
+    # 圖排在文字前面,而且照呼叫端給的順序——prompt 常照「image 1 是畫風、
+    # image 2 是角色」指名,官方 API 這邊順序換掉一樣會指錯人。
+    parts: list[dict] = [
+        {"inlineData": {"mimeType": mime or "image/png", "data": b64}}
+        for b64, mime in images if b64
+    ]
     parts.append({"text": prompt})
     body = {
         "contents": [{"role": "user", "parts": parts}],
@@ -54,11 +57,14 @@ def _call_sync(prompt: str, image_b64: str | None, mime: str) -> list[str]:
 
 
 async def official_generate(
-    prompt: str, image_b64: str | None = None, mime: str = "image/png"
+    prompt: str, images: list[tuple[str, str]] | None = None
 ) -> list[str]:
     """async 包裝(urllib 跑在 executor 避免卡事件迴圈)。無 key 回空 list;
-    呼叫失敗會丟例外,由 caller 決定要不要吞。"""
+    呼叫失敗會丟例外,由 caller 決定要不要吞。
+
+    images 是 [(base64, mime), ...],順序有意義。給空的就是純文字生圖。
+    """
     if not settings.gemini_official_api_key:
         return []
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _call_sync, prompt, image_b64, mime)
+    return await loop.run_in_executor(None, _call_sync, list(images or []), prompt)

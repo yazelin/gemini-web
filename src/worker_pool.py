@@ -87,7 +87,8 @@ class WorkerPool:
 
         Args:
             kind: "chat" / "generate" / "edit"
-            extra: edit 模式用，dict 含 reference_image (base64 或 data URL 字串)
+            extra: edit 模式用，dict 含 reference_images (base64 或 data URL 字串的
+                   list,順序有意義);舊的單數 reference_image 也還收
 
         Raises:
             QueueFullError: 等待數超過上限
@@ -286,13 +287,16 @@ class WorkerPool:
             )
         elif kind == "edit":
             from .gemini import edit_image
-            ref_b64 = (extra or {}).get("reference_image", "")
-            if not ref_b64:
+            refs = (extra or {}).get("reference_images") or []
+            single = (extra or {}).get("reference_image", "")
+            if not refs and single:
+                refs = [single]
+            if not refs:
                 self._pending_resets[worker_id] = asyncio.create_task(new_chat(page))
-                return {"success": False, "error": "invalid_input", "message": "edit 需要 reference_image", "worker_id": worker_id}
+                return {"success": False, "error": "invalid_input", "message": "edit 需要 reference_images", "worker_id": worker_id}
             # 強制切到 Banana 模型（網頁版「快捷」），普通 chat 模式不會做 image-to-image
             await switch_model(page, "gemini-3.1-flash-image-preview")
-            result = await edit_image(page, prompt, ref_b64, timeout)
+            result = await edit_image(page, prompt, refs, timeout)
             # edit 模式同 generate：成功時做去浮水印
             if result.get("success") and result.get("images"):
                 result["images"] = await asyncio.get_event_loop().run_in_executor(

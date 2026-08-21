@@ -601,12 +601,16 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60,
         return _error("browser_error", str(e), elapsed)
 
 
-async def _attach_file(page: Page, tmp_path: str) -> None:
+async def _attach_file(page: Page, tmp_path: str | list[str]) -> None:
     """點「上傳與工具」→ 選單 → file chooser → set_files。
 
     這段從 edit_image 抽出來，讓 chat_with_file 共用。選單長相各帳號不同
     （有的多一層子選單、有的第一次用會跳同意條款），已知變體全部在這裡。
     失敗直接拋例外，由呼叫端決定錯誤訊息。
+
+    收單一路徑或一串路徑。一次送多張是給參考圖用的:Gemini 網頁版一個
+    file chooser 就吃得下整批,而且模型認得順序(2026-08-21 實測,三張純色
+    形狀圖把送出順序與檔名字母序故意錯開,它照送出順序答對)。
     """
     logger.info("點擊上傳按鈕 + 選單，等 file chooser...")
     try:
@@ -645,14 +649,32 @@ async def _attach_file(page: Page, tmp_path: str) -> None:
                 continue
         if file_chooser is None:
             raise RuntimeError("點完上傳檔案沒有 file chooser，同意鈕與子選單都試過了")
-    await file_chooser.set_files(tmp_path)
-    logger.info("已 set_files：%s", tmp_path)
+    paths = [tmp_path] if isinstance(tmp_path, str) else list(tmp_path)
+    await file_chooser.set_files(paths)
+    logger.info("已 set_files（%d 個）：%s", len(paths), paths)
+
+
+def _ref_to_bytes(raw: str) -> tuple[bytes, str]:
+    """一張參考圖 → (位元組, 副檔名)。data URL 或純 base64 都收。
+
+    副檔名照 mime 給,不要一律 .png:Gemini 靠副檔名判型別,webp 命名成 png
+    在上傳那一步就可能被擋掉,而錯誤訊息只會說沒看到預覽。
+    """
+    import base64 as _b64
+    mime = "image/png"
+    if raw.startswith("data:") and "," in raw:
+        head, raw = raw.split(",", 1)
+        mime = head.split(":")[1].split(";")[0] if ":" in head else mime
+    data = _b64.b64decode(raw)
+    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+           "image/webp": ".webp", "image/gif": ".gif"}.get(mime.lower(), ".png")
+    return data, ext
 
 
 async def edit_image(
     page: Page,
     prompt: str,
-    reference_image_b64: str,
+    reference_images: str | list[str],
     timeout: int = 120,
 ) -> dict:
     """以參考圖編輯模式生成圖片：上傳 reference 圖 + 文字 prompt → 編輯後的新圖
@@ -660,7 +682,9 @@ async def edit_image(
     Args:
         page: 已開啟 Gemini 對話的 Playwright Page
         prompt: 編輯指令（建議英文，例：「change the dog's color to black」）
-        reference_image_b64: 參考圖。可以是 data:image/...;base64,xxx 或純 base64 字串
+        reference_images: 參考圖,一張字串或一串字串。每張可以是
+            data:image/...;base64,xxx 或純 base64。**順序有意義**:呼叫端的
+            prompt 常照「image 1 是畫風、image 2 是角色」指名。
         timeout: 整體 timeout 秒數
 
     Returns:
@@ -668,32 +692,33 @@ async def edit_image(
         {"success": True, "images": [...], "prompt": ..., "elapsed_seconds": ...}
         或 {"success": False, "error": ..., "message": ...}
     """
-    import base64 as _b64
     import os
+    import shutil as _shutil
     import tempfile
 
     start = time.time()
 
-    # 將 reference_image 寫到暫存檔，給 Playwright set_input_files 用
-    raw = reference_image_b64
-    if raw.startswith("data:"):
-        # data:image/jpeg;base64,xxx → 拆出 b64 部分
-        try:
-            _, raw = raw.split(",", 1)
-        except ValueError:
-            return _error("invalid_input", "reference_image 格式錯誤")
-    try:
-        img_bytes = _b64.b64decode(raw)
-    except Exception:
-        return _error("invalid_input", "reference_image 不是有效的 base64")
-    if len(img_bytes) > 10 * 1024 * 1024:
-        return _error("invalid_input", "reference_image 超過 10 MB")
+    refs = [reference_images] if isinstance(reference_images, str) else list(reference_images)
+    refs = [r for r in refs if r]
+    if not refs:
+        return _error("invalid_input", "沒有參考圖")
 
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="gemini_ref_")
-    os.close(tmp_fd)
+    # 全部寫進同一個暫存資料夾,一次 set_files 整批送上去
+    tmp_dir = tempfile.mkdtemp(prefix="gemini_ref_")
+    tmp_paths: list[str] = []
     try:
-        with open(tmp_path, "wb") as f:
-            f.write(img_bytes)
+        for i, raw in enumerate(refs, 1):
+            try:
+                img_bytes, ext = _ref_to_bytes(raw)
+            except Exception:
+                return _error("invalid_input", f"第 {i} 張參考圖不是有效的 base64")
+            if len(img_bytes) > 10 * 1024 * 1024:
+                return _error("invalid_input", f"第 {i} 張參考圖超過 10 MB")
+            # 檔名帶序號,萬一要看 Gemini 畫面上的附件卡片,順序一眼看得出來
+            path = os.path.join(tmp_dir, f"ref{i:02d}{ext}")
+            with open(path, "wb") as f:
+                f.write(img_bytes)
+            tmp_paths.append(path)
 
         # 1. 確認輸入框就緒
         input_el = await page.wait_for_selector(
@@ -735,7 +760,7 @@ async def edit_image(
         # 改成兩段：先用短逾時等 file chooser，沒等到就 dump 當下 overlay（留證據）
         # 並在新選單裡找「從電腦/裝置上傳」這類項目再點一次。
         try:
-            await _attach_file(page, tmp_path)
+            await _attach_file(page, tmp_paths)
         except Exception as e:
             elapsed = round(time.time() - start, 1)
             return _error(
@@ -745,24 +770,28 @@ async def edit_image(
             )
 
         # 3. 等預覽圖出現（blob: img 是 Gemini 上傳完成的指標）
+        #    多圖時要等**張數到齊**。只等「至少一張」的話,第一張一掛上去就
+        #    往下走,後面幾張還在傳就被送出了,而畫面上完全看不出少了圖。
         try:
             await page.wait_for_function(
-                """() => {
+                """(want) => {
                     const imgs = Array.from(document.querySelectorAll('img'));
-                    return imgs.some(img => {
+                    const n = imgs.filter(img => {
                         const src = img.src || '';
                         return src.startsWith('blob:') && (img.naturalWidth || 0) > 30;
-                    });
+                    }).length;
+                    return n >= want;
                 }""",
-                timeout=20_000,
+                arg=len(tmp_paths),
+                timeout=20_000 + 10_000 * (len(tmp_paths) - 1),
             )
-            logger.info("reference image 預覽已出現")
+            logger.info("%d 張 reference image 預覽都出現了", len(tmp_paths))
             await asyncio.sleep(1)  # 多等一點讓 UI stabilize
         except Exception:
             elapsed = round(time.time() - start, 1)
             return _error(
                 "upload_timeout",
-                "上傳檔案後 20 秒內沒看到預覽，可能上傳未成功",
+                f"上傳 {len(tmp_paths)} 張參考圖後沒看齊預覽，可能上傳未成功",
                 elapsed,
             )
 
@@ -916,10 +945,7 @@ async def edit_image(
         logger.exception("Gemini edit_image 互動發生錯誤")
         return _error("browser_error", str(e), elapsed)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:

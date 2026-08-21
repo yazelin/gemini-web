@@ -155,3 +155,98 @@ def test_detects_gemini_saying_no_attachment():
     assert not _looks_like_no_attachment(
         "人聲：完全沒有任何人聲。樂器：鋼琴與 pad。若需要更細的分析請提供時間點。")
     assert not _looks_like_no_attachment("這段音樂完全是純樂器演奏，沒有任何人聲。")
+
+
+@pytest.mark.asyncio
+async def test_edit_dispatches_every_reference_image_in_order(mock_worker_pool, monkeypatch):
+    """/api/edit 收 reference_images 時要整批往下送,順序不能換。
+
+    呼叫端(ai-comic-starter 的漫畫產線)的 prompt 是照「image 1 是畫風錨、
+    image 2 是角色」指名的。少送或換順序,模型畫出來的角色就漂了,而且
+    HTTP 200 什麼錯都不報。
+    """
+    monkeypatch.setattr(settings, "api_keys", [])
+    mock_worker_pool.dispatch = AsyncMock(return_value={
+        "success": True, "images": ["data:image/png;base64,out"], "elapsed_seconds": 9.0,
+    })
+    from src.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/edit", json={
+            "prompt": "draw page 1",
+            "reference_images": ["data:image/webp;base64,STYLE",
+                                 "data:image/webp;base64,CHAR",
+                                 "data:image/webp;base64,SCENE"],
+        })
+    assert resp.status_code == 200
+    kind = mock_worker_pool.dispatch.call_args[0][0]
+    assert kind == "edit"
+    refs = mock_worker_pool.dispatch.call_args[1]["extra"]["reference_images"]
+    assert [r.split(",")[-1] for r in refs] == ["STYLE", "CHAR", "SCENE"]
+
+
+@pytest.mark.asyncio
+async def test_edit_still_accepts_the_old_single_field(mock_worker_pool, monkeypatch):
+    """舊的單數 reference_image 不能破:ai-brain-site 與 catime 都還在打它。"""
+    monkeypatch.setattr(settings, "api_keys", [])
+    mock_worker_pool.dispatch = AsyncMock(return_value={
+        "success": True, "images": ["data:image/png;base64,out"], "elapsed_seconds": 9.0,
+    })
+    from src.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/edit", json={
+            "prompt": "make it night", "reference_image": "data:image/png;base64,ONE",
+        })
+    assert resp.status_code == 200
+    refs = mock_worker_pool.dispatch.call_args[1]["extra"]["reference_images"]
+    assert [r.split(",")[-1] for r in refs] == ["ONE"]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_forwards_all_inline_images(mock_worker_pool, monkeypatch):
+    """Gemini 相容端點帶多張 inline 圖時,整批都要進 edit。"""
+    monkeypatch.setattr(settings, "api_keys", [])
+    mock_worker_pool.dispatch = AsyncMock(return_value={
+        "success": True, "images": ["data:image/png;base64,out"], "elapsed_seconds": 9.0,
+    })
+    from src.main import app
+    transport = ASGITransport(app=app)
+    body = {"contents": [{"parts": [
+        {"text": "REFERENCE IMAGES: image 1 style, image 2 char"},
+        {"inlineData": {"mimeType": "image/webp", "data": "STYLE"}},
+        {"inlineData": {"mimeType": "image/webp", "data": "CHAR"}},
+    ]}]}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1beta/models/gemini-3.1-flash-image-preview:generateContent", json=body)
+    assert resp.status_code == 200
+    kind = mock_worker_pool.dispatch.call_args[0][0]
+    assert kind == "edit"
+    refs = mock_worker_pool.dispatch.call_args[1]["extra"]["reference_images"]
+    assert [r.split(",")[-1] for r in refs] == ["STYLE", "CHAR"]
+
+
+@pytest.mark.asyncio
+async def test_image_model_name_alone_means_image_output(mock_worker_pool, monkeypatch):
+    """只給影像模型名、沒給 responseModalities,也要當成要圖。
+
+    Google 官方 API 對 gemini-*-image-* 就是這樣;要求呼叫端一定要多送一個
+    欄位,等於這個相容端點不相容。少了這條規則的症狀是回 200 加一段文字,
+    呼叫端拿不到圖卻看不出哪裡錯。
+    """
+    monkeypatch.setattr(settings, "api_keys", [])
+    mock_worker_pool.dispatch = AsyncMock(return_value={
+        "success": True, "images": ["data:image/png;base64,out"], "elapsed_seconds": 9.0,
+    })
+    from src.main import app
+    transport = ASGITransport(app=app)
+    body = {"contents": [{"parts": [{"text": "a grey square"}]}],
+            "generationConfig": {"imageConfig": {"aspectRatio": "2:3"}}}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1beta/models/gemini-3.1-flash-image-preview:generateContent", json=body)
+    assert resp.status_code == 200
+    assert mock_worker_pool.dispatch.call_args[0][0] == "generate"
+    parts = resp.json()["candidates"][0]["content"]["parts"]
+    assert any("inlineData" in p for p in parts)

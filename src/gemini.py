@@ -533,31 +533,30 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
 
         # 優先用下載鈕拿原檔；拿不到就退回 src
         try:
-            btn = await page.query_selector(SELECTORS[download_key])
-            if btn:
+            if await page.query_selector(SELECTORS[download_key]):
+                # 媒體卡片在歌曲收尾時還會重繪，抓著的 ElementHandle 會變成
+                # "not attached to the DOM"。所以先讓它靜一下，而且一律用
+                # page.click(選擇器) 讓 Playwright 每次重新解析，不抱 handle。
+                await asyncio.sleep(2)
                 async with page.expect_download(timeout=180_000) as info:
-                    await btn.click()
+                    await page.click(SELECTORS[download_key], timeout=15_000)
                     if download_menu_key:
                         # 音樂的下載鈕會再開一個格式選單（影片／僅音訊），
                         # 不點第二下的話 expect_download 會空等到逾時
-                        await asyncio.sleep(1.5)
-                        item = await page.query_selector(SELECTORS[download_menu_key])
-                        if not item:
-                            # 選單沒開：把 overlay 裡實際有什麼記下來，下一輪才有依據
+                        for attempt in range(3):
+                            await asyncio.sleep(1.5)
+                            if await page.query_selector(SELECTORS[download_menu_key]):
+                                break
                             overlay = await page.evaluate(
                                 """() => Array.from(document.querySelectorAll(
                                      '.cdk-overlay-container *, [role=menu] *'))
                                    .map(e => (e.innerText||'').trim().slice(0,30))
                                    .filter(t => t).slice(0, 25)""")
-                            logger.warning("下載格式選單沒開，overlay 內容：%s",
-                                           json.dumps(overlay, ensure_ascii=False)[:500])
-                            # 再點一次（第一次可能只觸發了 hover）
-                            await btn.scroll_into_view_if_needed()
-                            await btn.click(force=True)
-                            await asyncio.sleep(1.5)
-                            item = await page.wait_for_selector(
-                                SELECTORS[download_menu_key], state="visible", timeout=15_000)
-                        await item.click()
+                            logger.warning("下載格式選單沒開（第 %d 次），overlay：%s",
+                                           attempt + 1,
+                                           json.dumps(overlay, ensure_ascii=False)[:300])
+                            await page.click(SELECTORS[download_key], timeout=15_000)
+                        await page.click(SELECTORS[download_menu_key], timeout=15_000)
                 dl = await info.value
                 path = await dl.path()
                 if path:

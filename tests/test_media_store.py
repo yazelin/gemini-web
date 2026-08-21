@@ -72,3 +72,26 @@ class TestHistoryLinkLabels:
                  "created_at": "2026-08-22T00:00:00", "image_paths": ["abc.png"],
                  "duration_seconds": 1.0}]
         assert ">image</a>" in _requests_table(rows, "")
+
+
+class TestNoStaleHandles:
+    """媒體卡片在歌曲收尾時會重繪，抱著 ElementHandle 會變成 not attached
+
+    2026-08-22 實測：重點那次直接掛在
+    `ElementHandle.scroll_into_view_if_needed: Element is not attached to the DOM`。
+    """
+
+    def test_download_uses_page_click_not_a_handle(self):
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._generate_media)
+        assert "page.click(SELECTORS[download_key]" in src
+        assert "btn.click()" not in src
+        assert "scroll_into_view_if_needed" not in src
+
+    def test_menu_click_is_retried(self):
+        """選單偶爾只吃到 hover，要能重點"""
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._generate_media)
+        assert "for attempt in range(3)" in src

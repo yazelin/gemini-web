@@ -117,3 +117,19 @@ class TestSubmitVerification:
         from src import gemini
         src = inspect.getsource(gemini._generate_media)
         assert "送出驗證失敗（繼續等結果）" in src
+
+
+class TestToolMenuClick:
+    """工具選單項也不能抱 handle 點
+
+    選單變長之後（多了「更多上傳選項」「更多工具」）那一項可能要捲動才點得到，
+    抱著 ElementHandle 點會直接 Timeout 5000ms。2026-08-22 影片連兩次卡在這裡。
+    """
+
+    def test_uses_page_click_with_fallback(self):
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini._enter_tool_mode)
+        assert "page.click(SELECTORS[selector_key]" in src
+        assert "force=True" in src
+        assert "create_img_btn.click" not in src

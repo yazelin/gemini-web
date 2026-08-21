@@ -147,10 +147,14 @@ class TestMusicEndpoint:
         assert "創作音樂" in SELECTORS["create_music"]
         assert ".cdk-overlay-container" in SELECTORS["create_music"]
 
-    def test_audio_result_selectors_exist(self):
+    def test_audio_result_is_the_player_button_not_an_audio_tag(self):
+        """Gemini 給的是自訂專輯卡片，頁面上一個 <audio> 都沒有（2026-08-22 實測）"""
         from src.selectors import SELECTORS
-        assert "audio" in SELECTORS["audios"]
-        assert "download_audio" in SELECTORS
+        assert "播放音樂" in SELECTORS["audios"]
+
+    def test_download_uses_the_real_aria_label(self):
+        from src.selectors import SELECTORS
+        assert "下載歌曲" in SELECTORS["download_audio"]
 
     @pytest.mark.asyncio
     async def test_missing_prompt_is_422(self):

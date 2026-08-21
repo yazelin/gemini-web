@@ -12,6 +12,9 @@ from .selectors import MODEL_MODE_MAP, SELECTORS
 
 logger = logging.getLogger(__name__)
 
+# 內層等待要比外層 wait_for 早這麼多秒收工，留給診斷程式跑完
+_DIAGNOSTIC_MARGIN = 45
+
 # 瀏覽器端 JS：把 <img> 畫進 canvas 轉 data URL。
 # 用於 blob: src（download 按鈕在 chat-edit 模式不觸發 download 事件時的後備）。
 # 同源 blob 不會污染 canvas，可直接 toDataURL。
@@ -499,8 +502,12 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
         await page.keyboard.press("Enter")
         logger.info("%s prompt 已送出，開始等待（最長 %d 秒）", mode_label, timeout)
 
-        # 等影片元素出現
-        deadline = time.monotonic() + timeout
+        # 等媒體元素出現。**內層一定要比外層早收工**：worker_pool 的
+        # asyncio.wait_for 也用同一個 timeout，兩邊同時到期的話請求會在同一秒
+        # 被取消，下面那段診斷（截圖＋節點清單）就永遠跑不到——2026-08-22 音樂
+        # 那次等滿 600 秒卻什麼證據都沒留下就是這樣。
+        wait_budget = max(30, timeout - _DIAGNOSTIC_MARGIN)
+        deadline = time.monotonic() + wait_budget
         video_el = None
         while time.monotonic() < deadline:
             video_el = await page.query_selector(SELECTORS[result_key])
@@ -520,7 +527,7 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
                         src: (e.getAttribute('src')||'').slice(0,80)}))""", el)
             logger.warning("等不到%s元素，頁面上的相關節點：%s",
                            mode_label, json.dumps(media, ensure_ascii=False)[:800])
-            return _error("timeout", f"等了 {timeout} 秒沒等到結果（診斷截圖見 diagnostics/）", elapsed)
+            return _error("timeout", f"等了 {wait_budget} 秒沒等到結果（診斷截圖見 diagnostics/）", elapsed)
 
         # 優先用下載鈕拿原檔；拿不到就退回 src
         try:

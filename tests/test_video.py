@@ -186,3 +186,25 @@ class TestMusicEndpoint:
             resp = await c.post("/api/music", json={"prompt": "x"})
         assert resp.status_code == 503
         assert "創作音樂" in resp.json()["detail"]
+
+
+class TestDiagnosticMargin:
+    """內層等待要比外層 wait_for 早收工，否則診斷永遠跑不到
+
+    2026-08-22 音樂那次等滿 600 秒被外層在同一秒取消，截圖與節點清單全部沒留下，
+    等於白等十分鐘。
+    """
+
+    def test_margin_is_positive(self):
+        from src.gemini import _DIAGNOSTIC_MARGIN
+        assert _DIAGNOSTIC_MARGIN > 0
+
+    def test_budget_leaves_room_for_diagnostics(self):
+        from src.gemini import _DIAGNOSTIC_MARGIN
+        for outer in (120, 600, 900):
+            assert max(30, outer - _DIAGNOSTIC_MARGIN) < outer
+
+    def test_short_timeouts_still_get_a_usable_budget(self):
+        """外層設很短時不要算成負數"""
+        from src.gemini import _DIAGNOSTIC_MARGIN
+        assert max(30, 10 - _DIAGNOSTIC_MARGIN) == 30

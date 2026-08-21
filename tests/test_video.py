@@ -212,3 +212,30 @@ class TestDiagnosticMargin:
         """外層設很短時不要算成負數"""
         from src.gemini import _DIAGNOSTIC_MARGIN
         assert max(30, 10 - _DIAGNOSTIC_MARGIN) == 30
+
+
+class TestMusicDownloadMenu:
+    """點「下載歌曲」會再開一個格式選單，要再點「僅音訊」才會真的下載
+
+    2026-08-22 實測：不點第二下的話 expect_download 空等 300 秒逾時。
+    診斷裡看得到那兩個選項：「影片／附封面圖片的音訊」與「僅音訊／MP3 音軌」。
+    """
+
+    def test_format_menu_selector_prefers_audio_only(self):
+        from src.selectors import SELECTORS
+        sel = SELECTORS["download_audio_format"]
+        assert "僅音訊" in sel and "MP3" in sel
+        assert "影片" not in sel      # 別誤點成「附封面圖片的音訊」
+
+    def test_music_passes_the_menu_key(self):
+        """影片不需要第二段，音樂需要 —— 差異要出現在呼叫端"""
+        import inspect
+        from src import gemini
+        src = inspect.getsource(gemini.generate_music)
+        assert "download_menu_key" in src
+        assert "download_audio_format" in src
+
+    def test_video_does_not_pass_a_menu_key(self):
+        import inspect
+        from src import gemini
+        assert "download_menu_key" not in inspect.getsource(gemini.generate_video)

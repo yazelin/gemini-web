@@ -464,13 +464,15 @@ async def generate_music(page: Page, prompt: str, timeout: int = 600,
         page, prompt, timeout, worker_id,
         mode_key="create_music", mode_label="Create music",
         result_key="audios", download_key="download_audio",
+        download_menu_key="download_audio_format",
         field="audio", mime="audio/mpeg", tag="music", el="audio")
 
 
 async def _generate_media(page: Page, prompt: str, timeout: int,
                           worker_id: int | None, *, mode_key: str, mode_label: str,
                           result_key: str, download_key: str, field: str,
-                          mime: str, tag: str, el: str) -> dict:
+                          mime: str, tag: str, el: str,
+                          download_menu_key: str | None = None) -> dict:
     """影片與音樂共用的流程：進模式 → 送 prompt → 等媒體元素 → 抓檔案
 
     兩者除了選單項與結果元素之外完全一樣，所以只有一份。抓不到結果時會
@@ -533,15 +535,23 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
         try:
             btn = await page.query_selector(SELECTORS[download_key])
             if btn:
-                async with page.expect_download(timeout=300_000) as info:
+                async with page.expect_download(timeout=180_000) as info:
                     await btn.click()
+                    if download_menu_key:
+                        # 音樂的下載鈕會再開一個格式選單（影片／僅音訊），
+                        # 不點第二下的話 expect_download 會空等到逾時
+                        await asyncio.sleep(1)
+                        item = await page.wait_for_selector(
+                            SELECTORS[download_menu_key], state="visible", timeout=10_000)
+                        await item.click()
                 dl = await info.value
                 path = await dl.path()
                 if path:
                     data = Path(path).read_bytes()
                     return {"success": True, "mime": mime,
                             field: base64.b64encode(data).decode("ascii"),
-                            "prompt": prompt, "elapsed_seconds": elapsed}
+                            "prompt": prompt,
+                            "elapsed_seconds": round(time.time() - start, 1)}
         except Exception as e:
             logger.warning("%s 下載鈕失敗，改用 src：%s", mode_label, e)
 

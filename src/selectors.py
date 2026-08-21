@@ -186,6 +186,18 @@ SELECTORS = {
         "audio[src]"
     ),
 
+    # 點「下載歌曲」之後還會再開一個選單，兩個選項：
+    #   「影片 / 附封面圖片的音訊」與「僅音訊 / MP3 音軌」
+    # 要的是後者。不點這一步的話 expect_download 會空等到逾時。
+    "download_audio_format": (
+        ".cdk-overlay-container button:has-text('僅音訊'), "
+        ".cdk-overlay-container button:has-text('MP3'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('僅音訊'), "
+        ".cdk-overlay-container [role='menuitem']:has-text('MP3'), "
+        "button:has-text('僅音訊'), "
+        "button:has-text('MP3 音軌')"
+    ),
+
     "download_audio": (
         "button[aria-label='下載歌曲'], "
         "button[aria-label*='下載歌曲'], "

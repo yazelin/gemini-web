@@ -342,8 +342,14 @@ async def _enter_tool_mode(page: Page, input_el, selector_key: str, label: str):
             await asyncio.sleep(0.5)
             return False, input_el
 
-        # 縮短 click timeout，避免 selector 過時時卡 30 秒重試
-        await create_img_btn.click(timeout=5_000)
+        # 用 page.click(選擇器) 而不是抱著 handle：選單變長之後（多了「更多上傳
+        # 選項」「更多工具」）那一項可能要捲動才點得到，而 page.click 會自己
+        # 重新解析、捲進視野、等到可點。抱 handle 會直接逾時。
+        try:
+            await page.click(SELECTORS[selector_key], timeout=8_000)
+        except Exception:
+            # 還是點不到就硬點一次（被 tooltip 之類的蓋住時）
+            await page.click(SELECTORS[selector_key], timeout=8_000, force=True)
         await asyncio.sleep(1)
         # 2026-06：「建立圖像」是 menuitemcheckbox，點完選單(overlay)不會
         # 自動關，會擋住輸入框。按 Esc 關掉 overlay；image 模式已開啟，

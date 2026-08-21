@@ -43,6 +43,24 @@ def save_images(images: list[str]) -> list[str]:
     return filenames
 
 
+def save_media(b64: str, ext: str) -> str | None:
+    """把一段 base64 媒體存進 GENERATED_DIR，回檔名；解不開回 None。
+
+    影片與音樂跟圖片放同一個目錄，所以 sweep_old 的保留天數一起管，History 頁
+    也用同一組連結邏輯。它們原本只以 base64 回給呼叫端、伺服器上不留檔，
+    History 看得到「跑過、成功、耗時多久」卻拿不回檔案。
+    """
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    (_generated_dir() / filename).write_bytes(raw)
+    return filename
+
+
 def delete_files(filenames: list[str]) -> None:
     d = _generated_dir()
     for name in filenames:

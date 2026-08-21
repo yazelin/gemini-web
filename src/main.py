@@ -160,9 +160,18 @@ async def _dispatch_and_log(
         raise
 
     image_paths: list[str] = []
-    if result.get("success") and result.get("images"):
-        image_paths = image_store.save_images(result["images"])
-        image_store.sweep_old(settings.image_retention_days)
+    if result.get("success"):
+        if result.get("images"):
+            image_paths = image_store.save_images(result["images"])
+        # 影片與音樂也存下來，History 才連得到檔案（跟圖片同一個目錄、
+        # 同一套保留天數）
+        for field, ext in (("video", "mp4"), ("audio", "mp3")):
+            if result.get(field):
+                name = image_store.save_media(result[field], ext)
+                if name:
+                    image_paths.append(name)
+        if image_paths:
+            image_store.sweep_old(settings.image_retention_days)
 
     admin_db.record(
         kind=kind,

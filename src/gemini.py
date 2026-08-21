@@ -379,15 +379,22 @@ async def _log_result_menu(page: Page, label: str) -> None:
             logger.info("[探測] %s：找不到「顯示更多選項」", label)
             return
         await page.click(SELECTORS["result_more_options"], timeout=10_000)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
+        # 選單可能不在 cdk-overlay 裡，所以連整頁的可見按鈕一起撈
         items = await page.evaluate(
-            """() => Array.from(document.querySelectorAll(
-                 '.cdk-overlay-container [role=menuitem], .cdk-overlay-container button, '
-                 + '.cdk-overlay-container [role=menuitemcheckbox]'))
-               .map(e => ((e.innerText || '') + '|' + (e.getAttribute('aria-label') || '')).trim())
-               .filter(t => t && t !== '|').slice(0, 25)""")
-        logger.info("[探測] %s 的「顯示更多選項」選單：%s",
-                    label, json.dumps(items, ensure_ascii=False)[:700])
+            """() => {
+                 const seen = new Set();
+                 return Array.from(document.querySelectorAll(
+                     'button, [role=menuitem], [role=menuitemcheckbox], a'))
+                   .filter(e => e.offsetParent !== null)
+                   .map(e => ((e.innerText || '').trim() + '|'
+                              + (e.getAttribute('aria-label') || '')).trim())
+                   .filter(t => t && t !== '|' && !seen.has(t) && seen.add(t))
+                   .slice(0, 60);
+               }""")
+        logger.info("[探測] %s 點開更多選項後的可見按鈕：%s",
+                    label, json.dumps(items, ensure_ascii=False)[:1200])
+        await dump_page_state(page, "more-options", None)
         await page.keyboard.press("Escape")
         await asyncio.sleep(0.8)
     except Exception as e:

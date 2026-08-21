@@ -682,8 +682,11 @@ def _requests_table(requests: list[dict[str, Any]], prefix: str) -> str:
         duration_str = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "—"
         worker_id = item.get("worker_id")
         worker_str = str(worker_id) if worker_id is not None else "—"
+        # 標籤跟著副檔名走：同一欄現在也放影片與音樂
+        _label = {"mp4": "video", "mp3": "audio"}
         links = [
-            f"<a href='{prefix}/generated/{html.escape(Path(p).name)}' target='_blank'>image</a>"
+            f"<a href='{prefix}/generated/{html.escape(Path(p).name)}' target='_blank'>"
+            f"{_label.get(Path(p).suffix.lstrip('.').lower(), 'image')}</a>"
             for p in (item.get("image_paths") or [])
         ]
         # 落地圖片會在生圖時被順手掃掉（image_store.sweep_old），到期時間就是

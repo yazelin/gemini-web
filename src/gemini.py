@@ -1307,6 +1307,20 @@ async def edit_image(
         _shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+async def _last_response_text(page: Page) -> tuple[str, list[int]]:
+    """取「最後一個非空」的回應元素文字，順便回每個元素的長度給診斷用
+
+    原本是直接取 `[-1]`。2026-08-22 實測到一個反例：問「只回名字」這種
+    極短的問題，Gemini 答了「林亞澤」並掛一個 TXT 引用晶片，DOM 上那個
+    晶片自己也命中 `message-content` 而且是空的，於是 `[-1]` 永遠讀到空
+    字串、等滿 90 秒才以 no_response 收場——截圖裡答案明明就在畫面上。
+    """
+    els = await page.query_selector_all(SELECTORS["response"])
+    texts = [(await e.inner_text()).strip() for e in els]
+    last = next((t for t in reversed(texts) if t), "")
+    return last, [len(t) for t in texts]
+
+
 async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
     """在 Gemini 頁面輸入 prompt 並擷取文字回應
 
@@ -1386,10 +1400,9 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
         stable_count = 0
         for _ in range(90):
             await asyncio.sleep(1)
-            response_els = await page.query_selector_all(SELECTORS["response"])
-            if not response_els:
+            text, _ = await _last_response_text(page)
+            if not text and not await page.query_selector(SELECTORS["response"]):
                 continue
-            text = (await response_els[-1].inner_text()).strip()
             if text and text == prev_text:
                 stable_count += 1
                 # 條件 (a): stable + stop 按鈕消失 + 2 秒複核未再變長
@@ -1397,9 +1410,8 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
                     stop_btn = await page.query_selector(SELECTORS["stop_generating"])
                     if not stop_btn:
                         await asyncio.sleep(2)
-                        confirm_els = await page.query_selector_all(SELECTORS["response"])
-                        confirm = ((await confirm_els[-1].inner_text()).strip()
-                                   if confirm_els else text)
+                        confirm, _ = await _last_response_text(page)
+                        confirm = confirm or text
                         if confirm != text:
                             # 還在變(不一定變長,例如表格重排) → 渲染停頓誤判,繼續等
                             prev_text = confirm
@@ -1414,16 +1426,16 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
                 prev_text = text
 
         # 5. 提取文字回應
-        response_els = await page.query_selector_all(SELECTORS["response"])
-        if not response_els:
+        text, lengths = await _last_response_text(page)
+        if not lengths:
             elapsed = round(time.time() - start, 1)
             return _error("no_response", "Gemini 未回應", elapsed)
 
-        last_response = response_els[-1]
-        text = (await last_response.inner_text()).strip()
-
         if not text:
             elapsed = round(time.time() - start, 1)
+            # 每個命中元素的字數一起記下來：全 0 = 真的沒答，有非 0 卻抽不到
+            # = 選擇器對到了不該對的東西
+            logger.warning("回應元素都是空的，各元素字數：%s", lengths)
             return _error("no_response", "Gemini 回應為空", elapsed)
 
         # 6. 檢查是否被拒絕

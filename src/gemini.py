@@ -556,7 +556,8 @@ async def generate_video(page: Page, prompt: str, timeout: int = 600,
 
 
 async def generate_music(page: Page, prompt: str, timeout: int = 600,
-                         worker_id: int | None = None) -> dict:
+                         worker_id: int | None = None,
+                         ref_path: str | None = None) -> dict:
     """在 Gemini 頁面產生音樂並把音檔抓下來
 
     回傳 {"success": True, "audio": <base64>, "mime": "audio/mpeg", ...}
@@ -566,14 +567,16 @@ async def generate_music(page: Page, prompt: str, timeout: int = 600,
         mode_key="create_music", mode_label="Create music",
         result_key="audios", download_key="download_audio",
         download_menu_key="download_audio_format",
-        field="audio", mime="audio/mpeg", tag="music", el="audio")
+        field="audio", mime="audio/mpeg", tag="music", el="audio",
+        ref_path=ref_path)
 
 
 async def _generate_media(page: Page, prompt: str, timeout: int,
                           worker_id: int | None, *, mode_key: str, mode_label: str,
                           result_key: str, download_key: str, field: str,
                           mime: str, tag: str, el: str,
-                          download_menu_key: str | None = None) -> dict:
+                          download_menu_key: str | None = None,
+                          ref_path: str | None = None) -> dict:
     """影片與音樂共用的流程：進模式 → 送 prompt → 等媒體元素 → 抓檔案
 
     兩者除了選單項與結果元素之外完全一樣，所以只有一份。抓不到結果時會
@@ -601,6 +604,14 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
                           f"進不了{mode_label}模式（工具選單裡找不到那一項，可能是帳號"
                           "沒有這個功能，或選單改版了；診斷截圖見 diagnostics/）",
                           round(time.time() - start, 1))
+
+        if ref_path:
+            # 掛得上去，但 Lyria 不理它：2026-08-22 實測，附了參考音檔又明講
+            # 「保留它的旋律走向」，產出與參考完全無關（比對方法與證據見 README
+            # 「音樂參考檔」）。留著這條路是為了 Gemini 改版後好重測，正常不要用。
+            await _attach_file(page, ref_path)
+            await asyncio.sleep(2)
+            input_el = await page.query_selector(SELECTORS["input"]) or input_el
 
         await input_el.click()
         await page.keyboard.type(prompt)

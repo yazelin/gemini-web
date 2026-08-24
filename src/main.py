@@ -355,6 +355,10 @@ async def api_video(req: VideoRequest, request: Request):
 class MusicRequest(BaseModel):
     prompt: str
     timeout: int = 600
+    # 可選的參考音檔（base64）。實測掛得上去但 Lyria 不理它，等於白花時間，
+    # 留著只為了 Gemini 改版後好重測，見 README「音樂參考檔」。
+    file: str = ""
+    filename: str = ""
 
 
 @app.post("/api/music")
@@ -366,7 +370,10 @@ async def api_music(req: MusicRequest, request: Request):
     """
     _verify_api_key(request, None)
     try:
-        return await _dispatch_and_log("music", req.prompt, "", req.timeout, request=request)
+        return await _dispatch_and_log(
+            "music", req.prompt, "", req.timeout,
+            extra=({"file": req.file, "filename": req.filename} if req.file else None),
+            request=request)
     except NoCapableWorkerError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except QueueFullError:

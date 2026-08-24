@@ -341,7 +341,31 @@ class WorkerPool:
         elif kind == "video":
             result = await generate_video(page, prompt, timeout, worker_id=worker_id)
         elif kind == "music":
-            result = await generate_music(page, prompt, timeout, worker_id=worker_id)
+            # 可選的參考音檔。探測過 Create music 模式下上傳選單仍有「上傳檔案」，
+            # 掛得上去；Lyria 會不會真的當音樂參考用是另一回事，見 docs。
+            ref_b64 = (extra or {}).get("file", "")
+            ref_tmp_dir = None
+            ref_path = None
+            if ref_b64:
+                import base64 as _b64
+                import os as _os
+                import re as _re
+                import tempfile as _tf
+                name = _re.sub(r"[^\w.\-]", "_",
+                               _os.path.basename((extra or {}).get("filename", "") or "ref.mp3"))[:80]
+                if not _os.path.splitext(name)[1]:
+                    name += ".mp3"
+                ref_tmp_dir = _tf.mkdtemp(prefix="gemini_music_ref_")
+                ref_path = _os.path.join(ref_tmp_dir, name)
+                with open(ref_path, "wb") as f:
+                    f.write(_b64.b64decode(ref_b64))
+            try:
+                result = await generate_music(page, prompt, timeout,
+                                              worker_id=worker_id, ref_path=ref_path)
+            finally:
+                if ref_tmp_dir:
+                    import shutil as _sh
+                    _sh.rmtree(ref_tmp_dir, ignore_errors=True)
         elif kind == "edit":
             from .gemini import edit_image
             refs = (extra or {}).get("reference_images") or []

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
-from .selectors import MODEL_MODE_MAP, SELECTORS
+from .selectors import MODEL_MODE_MAP, SELECTORS, SEND_BUTTON_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +151,27 @@ async def dump_page_state(page: Page, tag: str, worker_id: int | None = None) ->
             .map(b => ({text: b.innerText.trim().slice(0, 40),
                         aria: (b.getAttribute('aria-label') || '').slice(0, 40)}))
             .filter(b => b.text || b.aria)""")
+        # 輸入元素清單 —— 選擇器壞掉時這份就是修它的依據，不必用猜的。
+        # 2026-08-31：影片頁的 [contenteditable] 一個都沒匹配到（排除掉 Quill
+        # 的 .ql-clipboard 之後），代表那頁的輸入框根本是別種元素，但當時的
+        # 診斷只記按鈕，答不出是哪一種。
+        inputs = await page.evaluate("""() => Array.from(document.querySelectorAll(
+                'textarea, input:not([type=hidden]), [contenteditable="true"]'))
+            .slice(0, 20).map(e => ({
+                tag: e.tagName.toLowerCase(),
+                cls: (e.className || '').toString().slice(0, 60),
+                placeholder: (e.getAttribute('placeholder')
+                              || e.getAttribute('data-placeholder')
+                              || e.getAttribute('aria-label') || '').slice(0, 60),
+                visible: !!(e.offsetParent || e.getClientRects().length),
+                text: (e.innerText || e.value || '').trim().slice(0, 40)}))""")
         info = {
             "worker_id": worker_id,
             "tag": tag,
             "url": page.url,
             "title": await page.title(),
             "ready": await page_ready(page),
+            "inputs": inputs,
             "buttons": buttons,
         }
         Path(f"{base}.json").write_text(
@@ -215,6 +230,27 @@ _GENERIC_ERROR_PHRASES = [
 ]
 
 
+async def _gemini_error_text(page: Page) -> str:
+    """Gemini 有沒有用文字回了一句通用錯誤；有的話回原文（截斷），沒有回空字串。
+
+    只認**明確的錯誤字樣**而不是「有文字就算」：生成成功時 Gemini 也常先吐一段
+    說明，用文字有無當終止條件會在東西還在渲染時就誤判成失敗。
+    """
+    try:
+        els = await page.query_selector_all(SELECTORS["response"])
+        if not els:
+            return ""
+        text = (await els[-1].inner_text()).strip()
+    except Exception as e:  # noqa: BLE001 — 讀不到就當沒錯誤，別擋住主流程
+        logger.debug("讀 Gemini 回應文字失敗：%s", e)
+        return ""
+    low = text.lower()
+    for phrase in _GENERIC_ERROR_PHRASES:
+        if phrase.lower() in low:
+            return text[:200]
+    return ""
+
+
 async def _wait_for_image_or_error(page: Page, wait_ms: int) -> str | None:
     """等生成的圖片出現；Gemini 若先回通用錯誤就提早收工。
 
@@ -228,13 +264,10 @@ async def _wait_for_image_or_error(page: Page, wait_ms: int) -> str | None:
     while time.monotonic() < deadline:
         if await page.query_selector(SELECTORS["images"]):
             return None
-        els = await page.query_selector_all(SELECTORS["response"])
-        if els:
-            text = (await els[-1].inner_text()).strip()
-            for phrase in _GENERIC_ERROR_PHRASES:
-                if phrase.lower() in text.lower():
-                    logger.warning("Gemini 回通用錯誤，不再空等：%s", text[:120])
-                    return text[:200]
+        err = await _gemini_error_text(page)
+        if err:
+            logger.warning("Gemini 回通用錯誤，不再空等：%s", err[:120])
+            return err
         await asyncio.sleep(2)
     return None
 
@@ -477,7 +510,31 @@ async def probe_tool_capability(page: Page, selector_key: str, label: str) -> bo
         return None
 
 
-async def _enter_video_via_sidebar(page: Page, input_el):
+async def _click_first_visible(page: Page, selector: str,
+                               timeout: int = 10_000) -> bool:
+    """點 selector 匹配到的第一個**可見且 enabled** 的元素。
+
+    Playwright 的 click(逗號串) 是解析到第一個匹配就試，隱藏元素會讓它白等滿
+    timeout。側欄「影片」入口（收合時仍在 DOM）就是這樣浪費過 10 秒。
+    """
+    try:
+        loc = page.locator(selector)
+        for i in range(await loc.count()):
+            cand = loc.nth(i)
+            try:
+                if not await cand.is_visible() or not await cand.is_enabled():
+                    continue
+                await cand.click(timeout=timeout)
+                return True
+            except Exception as e:
+                logger.debug("%s 第 %d 個點不動：%s", selector[:40], i, e)
+    except Exception as e:
+        logger.warning("找可見元素失敗（%s）：%s", selector[:40], e)
+    return False
+
+
+async def _enter_video_via_sidebar(page: Page, input_el,
+                                   worker_id: int | None = None):
     """走側欄的「影片」入口（2026-08-22 新版介面）。
 
     回 (是否成功, 輸入框)。點進去之後把可見的輸入提示記進 log —— Google 這個
@@ -486,7 +543,15 @@ async def _enter_video_via_sidebar(page: Page, input_el):
     try:
         if not await page.query_selector(SELECTORS["sidebar_video"]):
             return False, input_el
-        await page.click(SELECTORS["sidebar_video"], timeout=10_000)
+
+        # 側欄收合時那個 <a href="/videos"> 還在 DOM 裡但不可見，直接 click
+        # 會白等滿 10 秒才拋 timeout，然後被迫退回工具選單那條路（8/22 記錄過
+        # 那條「模式不黏、會生出靜態圖」）。所以：先找可見的點，找不到就直接
+        # 導去 /videos —— 那正是這個連結的 href，效果一樣而且不會卡。
+        if not await _click_first_visible(page, SELECTORS["sidebar_video"]):
+            logger.info("側欄「影片」不可見（側欄收合？），改直接導向 %s",
+                        VIDEO_PAGE_URL)
+            await page.goto(VIDEO_PAGE_URL, wait_until="domcontentloaded")
         await asyncio.sleep(2.5)
         refreshed = await page.wait_for_selector(
             SELECTORS["input"], state="visible", timeout=15_000)
@@ -499,6 +564,9 @@ async def _enter_video_via_sidebar(page: Page, input_el):
         return True, (refreshed or input_el)
     except Exception as e:
         logger.warning("走側欄進影片頁失敗：%s", e)
+        # 存證：這條路是 8/22 驗過能產出 mp4 的那條，它壞掉的時候要看得到現場。
+        # 診斷 json 裡的 inputs 會告訴我們影片頁的輸入框到底是什麼元素。
+        await dump_page_state(page, "video-sidebar", worker_id)
         return False, input_el
 
 
@@ -509,7 +577,7 @@ async def _ensure_video_mode(page: Page, input_el, worker_id: int | None = None)
     「Spark BETA」，worker 0 沒有。而舊版工具選單裡的「建立影片」點了模式不黏
     （結果生出一張靜態圖）。所以兩條都留，哪個帳號拿到哪一版都跑得動。
     """
-    ok, input_el = await _enter_video_via_sidebar(page, input_el)
+    ok, input_el = await _enter_video_via_sidebar(page, input_el, worker_id)
     if ok:
         return True, input_el
     logger.info("側欄沒有影片入口（或進不去），退回工具選單")
@@ -571,6 +639,110 @@ async def generate_music(page: Page, prompt: str, timeout: int = 600,
         ref_path=ref_path)
 
 
+# 影片頁（側欄「影片」那個連結的 href 就是 /videos）
+VIDEO_PAGE_URL = "https://gemini.google.com/videos"
+
+# 按下送出後讓頁面沉澱的秒數（測試會蓋成 0）
+_SUBMIT_SETTLE_SECONDS = 1.5
+
+
+def _result_wait_budget(timeout: float, setup_elapsed: float) -> float:
+    """算內層還能等多久才去存證收工。
+
+    **內層一定要比外層早收工**：worker_pool 的 asyncio.wait_for 用同一個
+    timeout，被它取消的話下面那段診斷（截圖＋元素清單）就永遠跑不到。
+
+    只扣固定 margin 不夠 —— 外層的碼表是從「請求進來」開始跑的，內層卻是從
+    「prompt 送出」才起算，中間進模式那段不算在內。2026-08-31 影片那次 setup
+    花了 67 秒（側欄 15 + 模式點擊 30 + 重置重試），內層截止點就落到外層後面
+    22 秒，請求被取消回 408，什麼證據都沒留。所以要把已經花掉的時間扣掉。
+
+    回 0 代表剩餘時間已經不夠等了，呼叫端應該立刻存證收工，而不是硬等到被取消。
+    """
+    budget = timeout - _DIAGNOSTIC_MARGIN - setup_elapsed
+    return budget if budget >= 30 else 0.0
+
+
+async def _composer_text(page: Page, input_el) -> str:
+    """讀 composer 現在還剩什麼字；空字串代表已經送出去了。
+
+    **一定要用手上這個 handle 讀，不要重新 document.querySelector。**
+    影片頁上不只一個 contenteditable（還有全螢幕輸入面），querySelector 回的是
+    DOM 順序第一個，那個是空的 —— 2026-08-31 影片那單就是這樣把「還躺在框裡」
+    誤判成「已送出」，然後空等 535 秒。
+
+    handle 會因為頁面重繪而失效（not attached to the DOM），那時才退回選擇器，
+    而且看「所有」候選元素，不是第一個。
+    """
+    if input_el is not None:
+        try:
+            txt = await input_el.evaluate(
+                "(e) => (e.innerText || e.value || '').trim()")
+            return (txt or "").strip()
+        except Exception as e:
+            logger.debug("用 handle 讀 composer 失敗，退回選擇器：%s", e)
+    try:
+        txt = await page.evaluate(
+            """(sel) => Array.from(document.querySelectorAll(sel))
+                 .map(e => (e.innerText || e.value || '').trim())
+                 .filter(Boolean).join(' ')""",
+            SELECTORS["input"])
+        return (txt or "").strip()
+    except Exception as e:
+        logger.warning("讀 composer 內容失敗：%s", e)
+        return ""
+
+
+async def _click_send_button(page: Page) -> bool:
+    """點送出鈕：按候選順序找第一個可見且 enabled 的才點。
+
+    逐一試而不是把逗號串丟給 page.click，是因為 CSS union 由 DOM 順序決勝，
+    寬鬆的比對會搶到別的按鈕；而且隱藏元素點下去只會白等滿 timeout
+    （側欄那條路 2026-08-31 就這樣浪費了 10 秒）。
+    """
+    for sel in SEND_BUTTON_CANDIDATES:
+        if await _click_first_visible(page, sel):
+            logger.info("已點送出鈕：%s", sel)
+            return True
+    logger.warning("找不到可點的送出鈕（候選 %d 個都不合）",
+                   len(SEND_BUTTON_CANDIDATES))
+    return False
+
+
+async def submit_prompt(page: Page, input_el, label: str,
+                        worker_id: int | None = None,
+                        tag: str = "submit") -> str:
+    """把已經打好字的 prompt 送出去，並確認**真的**送出了。
+
+    回空字串 = 成功；否則回一句可以直接轉給使用者的錯誤。
+
+    Enter 在某些頁面（影片／音樂的範本牆）不觸發送出，prompt 會一直躺在框裡，
+    整個請求就空等到逾時。2026-08-31 影片那次白等 535 秒，而且當時兩道防護網
+    同時是壞的（檢查讀錯元素、備援選擇器配不上 aria-label）。所以這裡走
+    Enter → 驗 → 點鈕 → 再驗，最後還是沒出去就立刻收工，不要讓使用者等滿逾時
+    才知道根本沒下單。
+    """
+    await page.keyboard.press("Enter")
+    await asyncio.sleep(_SUBMIT_SETTLE_SECONDS)
+
+    if not await _composer_text(page, input_el):
+        return ""
+
+    logger.warning("%s：Enter 沒送出，改點送出鈕", label)
+    clicked = await _click_send_button(page)
+    await asyncio.sleep(_SUBMIT_SETTLE_SECONDS)
+
+    left = await _composer_text(page, input_el)
+    if not left:
+        return ""
+
+    await dump_page_state(page, f"{tag}-not-sent", worker_id)
+    logger.error("%s：prompt 送不出去（有點到鈕=%s），輸入框還剩 %d 字",
+                 label, clicked, len(left))
+    return (f"{label} 的 prompt 送不出去：Enter 與送出鈕都沒生效，"
+            "可能是 Gemini 版面又改了（診斷截圖見 diagnostics/）")
+
+
 async def _generate_media(page: Page, prompt: str, timeout: int,
                           worker_id: int | None, *, mode_key: str, mode_label: str,
                           result_key: str, download_key: str, field: str,
@@ -616,40 +788,48 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
         await input_el.click()
         await page.keyboard.type(prompt)
         await asyncio.sleep(0.5)
-        await page.keyboard.press("Enter")
-
-        # 驗證真的送出去了。音樂模式的範本牆頁面上 Enter 有時不觸發送出，
-        # prompt 就一直躺在輸入框裡，然後等滿逾時什麼都沒發生
-        # （2026-08-22 實測：等了 555 秒，截圖顯示字還在框裡、送出鈕是亮的）。
-        await asyncio.sleep(1.5)
-        try:
-            still_there = await page.evaluate(
-                """(sel) => {const e = document.querySelector(sel);
-                             return e ? (e.innerText || e.value || '').trim() : ''}""",
-                SELECTORS["input"])
-            if still_there:
-                logger.warning("%s：Enter 沒送出，改點送出鈕", mode_label)
-                await page.click(SELECTORS["send"], timeout=10_000)
-                await asyncio.sleep(1)
-        except Exception as e:
-            logger.warning("送出驗證失敗（繼續等結果）：%s", e)
+        send_err = await submit_prompt(page, input_el, mode_label, worker_id, tag)
+        if send_err:
+            return _error("browser_error", send_err, round(time.time() - start, 1))
 
         logger.info("%s prompt 已送出，開始等待（最長 %d 秒）", mode_label, timeout)
 
-        # 等媒體元素出現。**內層一定要比外層早收工**：worker_pool 的
-        # asyncio.wait_for 也用同一個 timeout，兩邊同時到期的話請求會在同一秒
-        # 被取消，下面那段診斷（截圖＋節點清單）就永遠跑不到——2026-08-22 音樂
-        # 那次等滿 600 秒卻什麼證據都沒留下就是這樣。
-        wait_budget = max(30, timeout - _DIAGNOSTIC_MARGIN)
+        # 等媒體元素出現。預算的算法與理由見 _result_wait_budget()。
+        setup_elapsed = time.time() - start
+        wait_budget = _result_wait_budget(timeout, setup_elapsed)
+        if not wait_budget:
+            await dump_page_state(page, f"{tag}-no-budget", worker_id)
+            logger.error("%s：光是進模式就花了 %.0f 秒，剩下的時間不夠等結果",
+                         mode_label, setup_elapsed)
+            return _error(
+                "timeout",
+                f"進{mode_label}模式就花了 {setup_elapsed:.0f} 秒，剩餘時間不足以"
+                "等結果（診斷截圖見 diagnostics/）", round(setup_elapsed, 1))
+        if setup_elapsed > 10:
+            logger.info("進模式花了 %.0f 秒，結果等待預算縮為 %.0f 秒",
+                        setup_elapsed, wait_budget)
         deadline = time.monotonic() + wait_budget
         video_el = None
+        said = ""
         while time.monotonic() < deadline:
             video_el = await page.query_selector(SELECTORS[result_key])
             if video_el:
                 break
+            # Gemini 用文字回了錯誤就代表它不打算給媒體了，別再等下去。
+            # 2026-08-31：它 幾秒 就回了「I seem to be encountering an error」
+            # ——那句話本來就在 _GENERIC_ERROR_PHRASES 裡，圖片那條線看到會立刻
+            # 收工，但這條線當時沒接上，於是照樣空等了 468 秒才回 timeout。
+            said = await _gemini_error_text(page)
+            if said:
+                break
             await asyncio.sleep(5)
 
         elapsed = round(time.time() - start, 1)
+        if said and not video_el:
+            await dump_page_state(page, f"{tag}-refused", worker_id)
+            logger.warning("%s：Gemini 回了錯誤，不再空等（已等 %.0f 秒）：%s",
+                           mode_label, elapsed, said[:120])
+            return _error("gemini_error", f"Gemini 回：{said}", elapsed)
         if not video_el:
             # 抓不到就存證：影片結果的 DOM 還沒實地驗過，這份截圖與元素清單
             # 就是修選擇器的依據
@@ -661,7 +841,8 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
                         src: (e.getAttribute('src')||'').slice(0,80)}))""", el)
             logger.warning("等不到%s元素，頁面上的相關節點：%s",
                            mode_label, json.dumps(media, ensure_ascii=False)[:800])
-            return _error("timeout", f"等了 {wait_budget} 秒沒等到結果（診斷截圖見 diagnostics/）", elapsed)
+            return _error("timeout", f"等了 {wait_budget:.0f} 秒沒等到結果"
+                          "（診斷截圖見 diagnostics/）", elapsed)
 
         from .config import settings as _cfg
         if _cfg.probe_result_menu:
@@ -824,8 +1005,11 @@ async def generate_image(page: Page, prompt: str, timeout: int = 60,
         }""", prompt)
         await asyncio.sleep(1)
 
-        # 3. 送出（按 Enter）
-        await page.keyboard.press("Enter")
+        # 3. 送出（Enter；沒生效就改點送出鈕，還是不行就立刻收工）
+        send_err = await submit_prompt(page, input_el, "Create image",
+                                       worker_id, "image")
+        if send_err:
+            return _error("browser_error", send_err, round(time.time() - start, 1))
         logger.info("已送出 prompt：%s", prompt[:50])
 
         # 4. 等待回應完成
@@ -1190,8 +1374,10 @@ async def edit_image(
         }""", final_prompt)
         await asyncio.sleep(1)
 
-        # 5. 送出
-        await page.keyboard.press("Enter")
+        # 5. 送出（Enter；沒生效就改點送出鈕，還是不行就立刻收工）
+        send_err = await submit_prompt(page, input_el, "Edit image", tag="edit")
+        if send_err:
+            return _error("browser_error", send_err, round(time.time() - start, 1))
         logger.info("已送出 edit prompt：%s", final_prompt[:80])
 
         # 6. 等回應出現 — 同 generate_image 的策略
@@ -1382,8 +1568,10 @@ async def chat(page: Page, prompt: str, timeout: int = 60) -> dict:
         }""", prompt)
         await asyncio.sleep(1)
 
-        # 3. 送出
-        await page.keyboard.press("Enter")
+        # 3. 送出（Enter；沒生效就改點送出鈕，還是不行就立刻收工）
+        send_err = await submit_prompt(page, input_el, "Chat", tag="chat")
+        if send_err:
+            return _error("browser_error", send_err, round(time.time() - start, 1))
         logger.info("已送出 chat prompt：%s", prompt[:50])
 
         # 4. 等待回應完成：等 model-response 出現，再等文字穩定

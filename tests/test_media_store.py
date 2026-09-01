@@ -102,21 +102,26 @@ class TestSubmitVerification:
 
     2026-08-22 實測：音樂模式的範本牆頁面上按 Enter 沒送出，prompt 一直躺在
     輸入框裡，然後等滿 555 秒逾時——截圖顯示字還在框裡、送出鈕是亮的。
+
+    2026-08-31 影片又中一次（空等 535 秒），於是這條驗證抽成共用的
+    submit_prompt()，四個送出點都走它。行為細節釘在 test_prompt_submit.py，
+    這裡只確認 _generate_media 確實有接上去、沒有自己另寫一套。
     """
 
-    def test_submit_is_verified(self):
+    def test_submit_goes_through_the_verified_helper(self):
         import inspect
         from src import gemini
         src = inspect.getsource(gemini._generate_media)
-        assert "Enter" in src
-        assert "SELECTORS[\"send\"]" in src
+        assert "submit_prompt(" in src
+        # 不可以自己按 Enter 繞過驗證
+        assert 'keyboard.press("Enter")' not in src
 
-    def test_verification_failure_does_not_abort(self):
-        """驗證本身出錯不該讓整單失敗——還是要去等結果"""
+    def test_not_sent_aborts_instead_of_waiting_out_the_timeout(self):
+        """送不出去要立刻收工，不能再讓使用者等滿 580 秒"""
         import inspect
         from src import gemini
         src = inspect.getsource(gemini._generate_media)
-        assert "送出驗證失敗（繼續等結果）" in src
+        assert "send_err" in src and "return _error(" in src
 
 
 class TestToolMenuClick:

@@ -35,12 +35,39 @@ IMAGE_FALLBACK_MAP = {
     "gemini-3-pro": "gemini-3-flash",
 }
 
+# 送出按鈕。**按順序逐一試，點第一個「存在且可見且 enabled」的那個** ——
+# 不要直接把這串丟給 page.click：逗號串在 DOM 裡是誰在前面誰中選，跟這裡的
+# 順序無關，寬鬆的比對會搶到別的按鈕。
+#
+# 2026-08-31 校準：實際的 aria-label 是「傳送訊息」。舊寫法只精確比對「傳送」
+# 與 'Send message'，中文介面下一個都配不上，害 #51 加的 Enter-fallback 從未
+# 真的生效過 —— 影片那單因此空等 535 秒（診斷 w2-20260831-152741）。
+SEND_BUTTON_CANDIDATES = (
+    "button[aria-label='傳送訊息']",
+    "button[aria-label='Send message']",
+    "button[aria-label='傳送']",
+    "button[aria-label^='傳送']",
+    "button[aria-label^='Send message']",
+    "button.send-button",
+)
+
 SELECTORS = {
     # 輸入框 — contenteditable div（Gemini 用 Angular，class 帶動態屬性）
-    "input": "[contenteditable='true']",
+    #
+    # **一定要排除 .ql-clipboard**：那是 Quill 內部的隱藏貼上緩衝區，永遠隱藏、
+    # 永遠是空的，而且排在真正的編輯器前面。2026-08-31 頁面實證：
+    #
+    #   waiting for locator("[contenteditable='true']") to be visible
+    #     35 × locator resolved to hidden
+    #          <div tabindex="-1" class="ql-clipboard" contenteditable="true"></div>
+    #
+    # 沒排除的話兩種死法：querySelector 讀到它 → 「字還在框裡」被讀成空字串，
+    # 誤判 prompt 已送出然後空等 535 秒；wait_for_selector(visible) 等它變可見
+    # → 白等滿 15 秒（側欄進影片頁就是這樣失敗的）。
+    "input": "[contenteditable='true']:not(.ql-clipboard)",
 
-    # 送出按鈕（備用，主要用 Enter 鍵送出）
-    "send": "button[aria-label='Send message'], button[aria-label='傳送']",
+    # 送出按鈕（備用，主要用 Enter 鍵送出）；點的時候用 SEND_BUTTON_CANDIDATES
+    "send": ", ".join(SEND_BUTTON_CANDIDATES),
 
     # 回應區域 — Angular 自訂元素（新版用 message-content，舊版用 response-element）
     "response": "message-content, response-element",

@@ -239,3 +239,73 @@ class TestMusicDownloadMenu:
         import inspect
         from src import gemini
         assert "download_menu_key" not in inspect.getsource(gemini.generate_video)
+
+
+class TestSidebarVideoEntry:
+    """側欄「影片」入口收合時不能傻等，要直接導去 /videos。
+
+    2026-08-31：側欄那個 <a href="/videos"> 還在 DOM 但不可見，click 白等滿
+    10 秒才 timeout，於是退回工具選單那條路——而 8/22 已經記錄過那條「模式不黏、
+    會生出靜態圖」。走側欄才是驗過能產出 mp4 的路徑。
+    """
+
+    class _Locator:
+        def __init__(self, visible):
+            self._visible = visible
+
+        def nth(self, _i):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def is_visible(self):
+            return self._visible
+
+        async def is_enabled(self):
+            return True
+
+        async def click(self, timeout=None):
+            raise AssertionError("不該點不可見的元素")
+
+    class _Page:
+        def __init__(self, visible):
+            self._visible = visible
+            self.goto_urls = []
+
+        async def query_selector(self, _sel):
+            return object()          # 側欄連結在 DOM 裡
+
+        def locator(self, _sel):
+            return TestSidebarVideoEntry._Locator(self._visible)
+
+        async def goto(self, url, wait_until=None):
+            self.goto_urls.append(url)
+
+        async def wait_for_selector(self, _sel, state=None, timeout=None):
+            return object()
+
+        async def evaluate(self, _js, _arg=None):
+            return "描述你想生成的影片"
+
+    @pytest.mark.asyncio
+    async def test_navigates_when_the_sidebar_link_is_hidden(self, monkeypatch):
+        import asyncio as _asyncio
+
+        from src.gemini import VIDEO_PAGE_URL, _enter_video_via_sidebar
+
+        async def _nosleep(_s):
+            return None
+
+        monkeypatch.setattr(_asyncio, "sleep", _nosleep)
+        page = self._Page(visible=False)
+        ok, _ = await _enter_video_via_sidebar(page, None)
+        assert ok is True
+        assert page.goto_urls == [VIDEO_PAGE_URL]
+
+    @pytest.mark.asyncio
+    async def test_video_page_url_matches_the_links_href(self):
+        """側欄那個連結的 href 就是 /videos，別自己編一個網址。"""
+        from src.gemini import VIDEO_PAGE_URL
+
+        assert VIDEO_PAGE_URL.endswith("/videos")

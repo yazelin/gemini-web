@@ -67,6 +67,7 @@ def patched(monkeypatch):
 
 
 NO_RESPONSE = {"success": False, "error": "no_response", "message": "Gemini 未回應"}
+TIMEOUT = {"success": False, "error": "timeout", "message": "等了 548 秒沒等到結果"}
 OK = {"success": True, "text": "hi"}
 
 
@@ -91,7 +92,7 @@ def test_success_resets_streak():
 
 
 def test_other_errors_do_not_count():
-    """只有 no_response 算數;內容被擋、輸入不合法之類不代表 session 壞了。"""
+    """只有 no_response/timeout 算數;內容被擋、輸入不合法之類不代表 session 壞了。"""
     pool, _, _ = _pool()
     pool._note_no_response(0, NO_RESPONSE)
     assert pool._note_no_response(0, {"success": False, "error": "content_blocked"}) == 0
@@ -134,3 +135,18 @@ async def test_restart_failure_does_not_raise(patched):
 
     assert calls["start"] == 1
     assert pool._no_response_streak[0] == 0
+
+
+def test_timeout_counts_too():
+    """2026-09-03 worker 2 連兩次 music 逾時,回的是 timeout 不是 no_response,
+    以前完全沒進計數,第三層(重啟瀏覽器)永遠不會啟動。"""
+    pool, _, _ = _pool()
+    assert pool._note_no_response(0, TIMEOUT) == 1
+    assert pool._note_no_response(0, TIMEOUT) == 2
+
+
+def test_timeout_and_no_response_share_one_streak():
+    """同一顆 worker 一次逾時、一次沒回應,一樣算連續兩次。"""
+    pool, _, _ = _pool()
+    pool._note_no_response(0, TIMEOUT)
+    assert pool._note_no_response(0, NO_RESPONSE) == 2

@@ -34,6 +34,11 @@ DISPATCH_MODES = ("round-robin", "spillover")
 # 連續 6 次全滅,設 2 的話第二筆就會自己爬起來,而不是卡到有人發現。
 NO_RESPONSE_RESTART_THRESHOLD = 2
 
+# 算進上面那個計數的 error code。timeout 也要算:music/video 那條線送得出去、
+# 等滿逾時,gemini.py 回的是 "timeout" 不是 "no_response"(gemini.py:844),
+# 2026-09-03 worker 2 連兩次逾時完全沒進計數,第三層自癒永遠不會啟動。
+STALE_SESSION_ERRORS = ("no_response", "timeout")
+
 
 class WorkerPool:
     """管理 N 個 BrowserManager，依 dispatch mode 分配請求
@@ -201,12 +206,12 @@ class WorkerPool:
         return bm.page
 
     def _note_no_response(self, worker_id: int, result: dict) -> int:
-        """更新該 worker 的連續 no_response 計數,回傳更新後的值。
+        """更新該 worker 的連續「沒拿到結果」計數,回傳更新後的值。
 
-        只有 no_response 算數:content_blocked、invalid_input 之類是這一筆的問題,
-        不代表 session 壞了,不該把 worker 拖去重啟。
+        只有 STALE_SESSION_ERRORS 算數:content_blocked、invalid_input 之類是
+        這一筆的問題,不代表 session 壞了,不該把 worker 拖去重啟。
         """
-        if result.get("error") == "no_response":
+        if result.get("error") in STALE_SESSION_ERRORS:
             self._no_response_streak[worker_id] += 1
         else:
             self._no_response_streak[worker_id] = 0
@@ -224,12 +229,12 @@ class WorkerPool:
             await dump_page_state(bm.page, "no-response", worker_id)
 
         if streak < NO_RESPONSE_RESTART_THRESHOLD:
-            logger.warning("Worker %d no_response(連續 %d 次),先重置對話", worker_id, streak)
+            logger.warning("Worker %d 沒拿到結果(連續 %d 次),先重置對話", worker_id, streak)
             if bm.page:
                 await new_chat(bm.page)
             return
 
-        logger.error("Worker %d 連續 %d 次 no_response,重啟瀏覽器", worker_id, streak)
+        logger.error("Worker %d 連續 %d 次沒拿到結果,重啟瀏覽器", worker_id, streak)
         try:
             await bm.stop()
             await bm.start()

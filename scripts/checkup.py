@@ -13,7 +13,7 @@
 
   2. 「殼還在但 session 已死」—— 頁面輸入框都在、health 全綠,但送出去
      再也等不到回應,四個 worker 一路卡到有人發現。現在連續 2 次
-     no_response 會自動重啟 worker,所以要看的是「有沒有一直在觸發」。
+     連續沒拿到結果會自動重啟 worker,所以要看的是「有沒有一直在觸發」。
 """
 import json
 import re
@@ -208,8 +208,9 @@ def section_selfheal() -> None:
         print(f"  {D}讀不到 journal（權限不足？）{N}")
     else:
         pats = {
-            "連續 no_response → 重啟瀏覽器": r"次 no_response,重啟瀏覽器",
-            "no_response（尚未到重啟門檻）": r"no_response\(連續",
+            # 兩種寫法都留:0903 之前的 journal 記的是舊的「no_response」字樣。
+            "連續失敗 → 重啟瀏覽器": r"次 ?(沒拿到結果|no_response),重啟瀏覽器",
+            "連續失敗（尚未到重啟門檻）": r"(沒拿到結果|no_response)\(連續",
             "頁面未就緒 → 重置對話": r"頁面未就緒",
             "重啟瀏覽器失敗": r"瀏覽器重啟失敗",
         }

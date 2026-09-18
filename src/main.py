@@ -548,6 +548,26 @@ def _verify_api_key(request: Request, key: str | None):
     raise HTTPException(status_code=403, detail="Invalid API key")
 
 
+def _strip_json_wrapper(text: str) -> str:
+    """去掉 Gemini 網頁版愛加的 ```json 圍欄與 "JSON" 前綴,留下裸 JSON。"""
+    text = text.strip()
+    m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+    if m:
+        text = m.group(1).strip()
+    if text.upper().startswith("JSON"):
+        text = text[4:].lstrip()
+    return text
+
+
+def _parses_as_json(text: str) -> bool:
+    """這段文字是不是一份完整的 JSON。半截的陣列/物件會在這裡被擋下。"""
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
 async def _generate_content_impl(
     model: str, body: dict, request: Request | None = None, api_key_name: str | None = None
 ) -> dict:
@@ -644,13 +664,40 @@ async def _generate_content_impl(
         kind, extra = ("generate" if is_image else "chat"), None
     timeout = settings.default_timeout
 
-    try:
-        result = await _dispatch_and_log(kind, prompt, model, timeout,
-                                         extra=extra, request=request, api_key_name=api_key_name)
-    except QueueFullError:
-        raise HTTPException(status_code=429, detail="Queue full")
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=408, detail="Request timeout")
+    wants_json = (
+        response_mime == "application/json" and not is_image and not has_function_tools
+    )
+
+    # 網頁版沒有「生成結束」這個事件,gemini.chat 只能用「文字不再變」去推完成。
+    # 長一點的 JSON 在串流途中會凍結在開頭片段,那個推論就提早成立,回來的是半截
+    # 陣列(`[{...},` 沒有收尾),而且 HTTP 200、status succeeded,看起來一切正常。
+    # (2026-09-18:line-sticker-studio 的「生成 9 句」三次有兩次拿到半截,前端只
+    #  看得到 no phrases。)呼叫端點名要 JSON 的時候,「解得開」才是確定的完成訊
+    # 號,比等 stop 按鈕消失可靠,解不開就整段重跑。
+    # 只重跑一次:這是救偶發的搶拍,不是跟模型盧到它給對。連兩次都不完整多半是
+    # prompt 或頁面本身出事,照原樣回去給呼叫端看,不要把問題埋在重試裡。
+    for attempt in (1, 2):
+        try:
+            result = await _dispatch_and_log(kind, prompt, model, timeout,
+                                             extra=extra, request=request, api_key_name=api_key_name)
+        except QueueFullError:
+            raise HTTPException(status_code=429, detail="Queue full")
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=408, detail="Request timeout")
+
+        if not result.get("success"):
+            break
+
+        # JSON 回應清理（Gemini 網頁版可能加 "JSON\n" 前綴或 code block）
+        if not is_image and result.get("text") and not has_function_tools:
+            result["text"] = _strip_json_wrapper(result["text"])
+
+        if not wants_json or _parses_as_json(result.get("text", "")):
+            break
+        logger.warning(
+            "第 %d 次回應不是完整 JSON(%d chars,結尾 %r),重跑",
+            attempt, len(result.get("text") or ""), (result.get("text") or "")[-40:],
+        )
 
     if not result.get("success"):
         return {
@@ -660,18 +707,6 @@ async def _generate_content_impl(
                 "status": "FAILED_PRECONDITION",
             }
         }
-
-    # JSON 回應清理（Gemini 網頁版可能加 "JSON\n" 前綴或 code block）
-    if not is_image and result.get("text") and not has_function_tools:
-        text = result["text"].strip()
-        # 去掉 ```json ... ``` code block
-        m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
-        if m:
-            text = m.group(1).strip()
-        # 去掉 "JSON\n" 前綴
-        if text.upper().startswith("JSON"):
-            text = text[4:].lstrip()
-        result["text"] = text
 
     if is_image:
         parts: list[dict] = []

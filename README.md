@@ -481,6 +481,26 @@ curl -X POST http://localhost:8070/api/music \
 
 回 `{"success", "audio", "mime", "prompt", "elapsed_seconds"}`，`audio` 是 base64 音檔。
 
+#### 長度／人聲／類型（2026-10-07 起）
+
+音樂模式的輸入框下方有三顆選項鈕，網頁手動用時可以點，API 用三個可選欄位對應。
+不填的鈕不碰，等於介面預設（長度=標準、人聲與類型=依提示詞自訂）。
+
+```bash
+curl -X POST http://localhost:8070/api/music \
+  -H "Content-Type: application/json" -H "x-goog-api-key: YOUR_KEY" \
+  -d '{"prompt": "深夜寫程式的背景音", "length": "short", "vocals": "instrumental", "genre": "lofi"}'
+```
+
+| 欄位 | 可用值 |
+|---|---|
+| `length` | `short`（簡短）、`standard`（標準） |
+| `vocals` | `vocals`（人聲）、`instrumental`（純音樂） |
+| `genre` | `pop` `hiphop` `rock` `kpop` `latin` `electronic` `rnb` `country` `afrobeats` `reggae` `jazz_blues` `classical` `folk` `lofi` `acoustic` `soundtrack` `ambient` |
+
+值不在清單內回 **422** 並列出可用值。對照表在 `src/selectors.py` 的 `MUSIC_OPTIONS`，
+是 2026-10-07 用四個帳號之一實測抓的中文介面字；Gemini 改字或帳號切英文介面時要補。
+
 能力偵測與影片共用同一套：`/api/capabilities` 會同時報 `video` 與 `music` 兩種，
 派工也各自只挑做得到的帳號。
 

@@ -366,7 +366,8 @@ class WorkerPool:
                     f.write(_b64.b64decode(ref_b64))
             try:
                 result = await generate_music(page, prompt, timeout,
-                                              worker_id=worker_id, ref_path=ref_path)
+                                              worker_id=worker_id, ref_path=ref_path,
+                                              options=(extra or {}).get("options"))
             finally:
                 if ref_tmp_dir:
                     import shutil as _sh

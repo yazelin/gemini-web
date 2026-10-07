@@ -8,7 +8,8 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
-from .selectors import MODEL_MODE_MAP, SELECTORS, SEND_BUTTON_CANDIDATES
+from .selectors import (MODEL_MODE_MAP, MUSIC_OPTIONS, SELECTORS,
+                        SEND_BUTTON_CANDIDATES)
 
 logger = logging.getLogger(__name__)
 
@@ -625,9 +626,11 @@ async def generate_video(page: Page, prompt: str, timeout: int = 600,
 
 async def generate_music(page: Page, prompt: str, timeout: int = 600,
                          worker_id: int | None = None,
-                         ref_path: str | None = None) -> dict:
+                         ref_path: str | None = None,
+                         options: dict | None = None) -> dict:
     """在 Gemini 頁面產生音樂並把音檔抓下來
 
+    options：{"length"|"vocals"|"genre": <MUSIC_OPTIONS 的 key>}，沒給的不點。
     回傳 {"success": True, "audio": <base64>, "mime": "audio/mpeg", ...}
     """
     return await _generate_media(
@@ -636,7 +639,33 @@ async def generate_music(page: Page, prompt: str, timeout: int = 600,
         result_key="audios", download_key="download_audio",
         download_menu_key="download_audio_format",
         field="audio", mime="audio/mpeg", tag="music", el="audio",
-        ref_path=ref_path)
+        ref_path=ref_path, options=options)
+
+
+async def _select_music_options(page: Page, options: dict) -> str | None:
+    """進音樂模式後點輸入框下方的「長度／人聲／類型」。成功回 None，否則回錯誤字串。
+
+    三顆鈕點開都是 menuitemradio，用 role+exact name 抓，因為 has-text 是子字串
+    比對，「流行」會同時命中「韓國流行樂」。值已在 API 層驗過，這裡只負責點。
+    """
+    for key, value in options.items():
+        if not value:
+            continue
+        button_label, values = MUSIC_OPTIONS[key]
+        item_label = values[value]
+        try:
+            await page.get_by_role("button", name=button_label, exact=True).click(timeout=8_000)
+            await asyncio.sleep(1)
+            await page.get_by_role("menuitemradio", name=item_label, exact=True).click(timeout=8_000)
+            await asyncio.sleep(0.8)
+            logger.info("音樂選項 %s=%s（%s）已選", key, value, item_label)
+        except Exception as e:
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return f"點不到音樂選項 {key}={value}（{button_label}→{item_label}）：{e}"
+    return None
 
 
 # 影片頁（側欄「影片」那個連結的 href 就是 /videos）
@@ -748,7 +777,8 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
                           result_key: str, download_key: str, field: str,
                           mime: str, tag: str, el: str,
                           download_menu_key: str | None = None,
-                          ref_path: str | None = None) -> dict:
+                          ref_path: str | None = None,
+                          options: dict | None = None) -> dict:
     """影片與音樂共用的流程：進模式 → 送 prompt → 等媒體元素 → 抓檔案
 
     兩者除了選單項與結果元素之外完全一樣，所以只有一份。抓不到結果時會
@@ -776,6 +806,14 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
                           f"進不了{mode_label}模式（工具選單裡找不到那一項，可能是帳號"
                           "沒有這個功能，或選單改版了；診斷截圖見 diagnostics/）",
                           round(time.time() - start, 1))
+
+        if options:
+            opt_err = await _select_music_options(page, options)
+            if opt_err:
+                await dump_page_state(page, f"{tag}-options", worker_id)
+                return _error("browser_error", opt_err + "（診斷截圖見 diagnostics/）",
+                              round(time.time() - start, 1))
+            input_el = await page.query_selector(SELECTORS["input"]) or input_el
 
         if ref_path:
             # 掛得上去，但 Lyria 不理它：2026-08-22 實測，附了參考音檔又明講

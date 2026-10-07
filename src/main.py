@@ -18,6 +18,7 @@ from .admin import router as admin_router
 from .config import settings
 from .official_api import official_generate
 from .openclaw_adapter import build_prompt, build_response_parts
+from .selectors import invalid_music_option
 from .worker_pool import WorkerPool, QueueFullError, NoCapableWorkerError
 
 logging.basicConfig(
@@ -359,6 +360,10 @@ class MusicRequest(BaseModel):
     # 留著只為了 Gemini 改版後好重測，見 README「音樂參考檔」。
     file: str = ""
     filename: str = ""
+    # 介面上「長度／人聲／類型」三顆鈕，值見 selectors.MUSIC_OPTIONS；不填=介面預設
+    length: str = ""
+    vocals: str = ""
+    genre: str = ""
 
 
 @app.post("/api/music")
@@ -366,14 +371,22 @@ async def api_music(req: MusicRequest, request: Request):
     """產生音樂
 
     走 Gemini 網頁工具選單裡的「創作音樂」，跟影片同一條路。音檔以 base64
-    回傳（欄位 `audio`）。
+    回傳（欄位 `audio`）。length / vocals / genre 對應輸入框下方三顆選項鈕。
     """
     _verify_api_key(request, None)
+    options = {"length": req.length, "vocals": req.vocals, "genre": req.genre}
+    bad = invalid_music_option(options)
+    if bad:
+        raise HTTPException(status_code=422, detail=bad)
+    extra: dict = {}
+    if req.file:
+        extra.update(file=req.file, filename=req.filename)
+    if any(options.values()):
+        extra["options"] = {k: v for k, v in options.items() if v}
     try:
         return await _dispatch_and_log(
             "music", req.prompt, "", req.timeout,
-            extra=({"file": req.file, "filename": req.filename} if req.file else None),
-            request=request)
+            extra=extra or None, request=request)
     except NoCapableWorkerError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except QueueFullError:

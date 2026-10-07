@@ -498,7 +498,16 @@ curl -X POST http://localhost:8070/api/music \
 | `vocals` | `vocals`（人聲）、`instrumental`（純音樂） |
 | `genre` | `pop` `hiphop` `rock` `kpop` `latin` `electronic` `rnb` `country` `afrobeats` `reggae` `jazz_blues` `classical` `folk` `lofi` `acoustic` `soundtrack` `ambient` |
 
-值不在清單內回 **422** 並列出可用值。對照表在 `src/selectors.py` 的 `MUSIC_OPTIONS`，
+值不在清單內回 **422** 並列出可用值。
+
+#### 等不到結果時怎麼收工（影片與音樂共用）
+
+- Gemini 回了認得的錯誤字樣（「I seem to be encountering an error」這類）→ 立刻回 `gemini_error` 附原文。
+- Gemini 回了任何文字、之後 **180 秒**內還沒長出媒體卡片 → 回 `gemini_error` 附原文，不等滿逾時。
+  額度用完、內容被拒的提示字樣程式不一定認得，但「只給字不給卡片」的形狀一樣；
+  原文會進 admin history 的 error 欄，撞到新字樣看那裡。
+- 什麼都沒回 → 等到逾時回 `timeout`，連續兩次該 worker 重啟瀏覽器。`gemini_error` 不算進這個計數。
+- 一筆失敗不會自動換帳號重跑，呼叫端自己重試，下一筆 round-robin 會輪到別的帳號。對照表在 `src/selectors.py` 的 `MUSIC_OPTIONS`，
 是 2026-10-07 用四個帳號之一實測抓的中文介面字；Gemini 改字或帳號切英文介面時要補。
 
 能力偵測與影片共用同一套：`/api/capabilities` 會同時報 `video` 與 `music` 兩種，

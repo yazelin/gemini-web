@@ -1,8 +1,8 @@
-# Gemini Image
+# gemini-web
 
 > **快速安裝：** `uv tool install gemini-web && gemini-web install`
 
-使用 Playwright 自動化 Gemini 網頁版，提供**圖片生成**和**文字對話**功能。支援 **CLI 工具**和 **HTTP API** 兩種使用方式。
+使用 Playwright 自動化 Gemini 網頁版，包成 CLI 和 HTTP API：文字對話、上傳檔案問問題、生圖、改圖、做音樂，另有排隊版 API、相容官方 Gemini API 的端點，以及發金鑰的管理頁。
 
 自動移除 Gemini 可見水印（V2 profile 反向 alpha 混合，純 OpenCV、無額外依賴）。
 
@@ -40,6 +40,53 @@ gemini-web login
 ```
 
 在彈出的瀏覽器中登入 Google 帳號，確認進入 Gemini 頁面，按 Enter 關閉。登入狀態存在 `~/.gemini-web/profiles/`，之後不需要重新登入。
+
+## 裝在本機，給本機的程式或 AI 呼叫
+
+最常見的用法：服務跑在自己電腦上，同一台電腦的腳本、Claude Code、Codex 打 `http://localhost:8070`。
+
+```bash
+# 1. 安裝與登入（登入要人工在彈出的瀏覽器裡完成）
+uv tool install gemini-web && gemini-web install
+gemini-web login
+
+# 2. 設一把金鑰再啟動（不設任何金鑰時 /api/* 不檢查，只適合純本機實驗）
+export API_KEYS=my-local-key
+export ADMIN_PASSWORD='換成你自己的密碼'
+gemini-web serve --port 8070
+```
+
+`API_KEYS` 等環境變數也可以寫在啟動目錄的 `.env`。管理頁在 `http://localhost:8070/admin`，可以現場發、停用金鑰，看每筆請求。
+
+呼叫時把金鑰放在 `x-goog-api-key` 標頭：
+
+```bash
+# 文字
+curl -s http://localhost:8070/api/chat -H "x-goog-api-key: my-local-key" \
+  -H "Content-Type: application/json" -d '{"prompt": "用一句話介紹台北"}'
+
+# 生圖（回傳 base64）
+curl -s http://localhost:8070/api/generate -H "x-goog-api-key: my-local-key" \
+  -H "Content-Type: application/json" -d '{"prompt": "a cute orange cat, watercolor"}'
+```
+
+已經用官方 `google-genai` SDK 寫好的程式，只要把網址指過來，拿掉網址就回到官方 API：
+
+```python
+import os
+from google import genai
+
+base = os.getenv("GEMINI_WEB_BASE_URL")  # 例如 http://localhost:8070；沒設就打官方
+client = genai.Client(
+    api_key=os.environ["GEMINI_API_KEY"],
+    http_options={"api_version": "v1beta", "base_url": base} if base else None,
+)
+print(client.models.generate_content(model="gemini-2.5-flash", contents="你好").text)
+```
+
+要讓 AI agent 自己會用，叫它讀這個 repo 的 [`AGENTS.md`](AGENTS.md)（端點、金鑰、錯誤碼都在裡面）。Claude Code、Gemini CLI 在 `gemini-web install` 時會自動裝 slash commands。
+
+GitHub Actions 這類在別台機器上跑的程式連不到你的 `localhost`，要讓它們用，得把服務放在有網域和 HTTPS 的反向代理後面（見下方 systemd 與 `ADMIN_URL_PREFIX`）。沒有的話，直接用官方 Gemini API 最省事。
 
 ## 使用方式
 

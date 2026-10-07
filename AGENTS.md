@@ -1,6 +1,6 @@
-# Gemini Image — AI Agent 使用指引
+# gemini-web — AI Agent 使用指引
 
-本工具讓 AI Agent 能透過 Gemini 網頁版進行**文字對話**和**圖片生成**（含自動去水印）。
+本工具讓 AI Agent 能透過 Gemini 網頁版進行文字對話、上傳檔案問問題、生圖、改圖、做音樂（含自動去水印）。
 
 ## 前置需求
 
@@ -12,6 +12,26 @@ gemini-web health  # API 模式：檢查服務是否運行
 which gemini-web   # CLI 模式：確認指令存在
 ```
 
+## 連線與金鑰
+
+- 服務網址預設 `http://localhost:8070`（`gemini-web serve`）；別人架的服務用對方給的網址，例如 `https://example.com/gemini-web`。
+- 服務只要設過任何一把金鑰，每個請求都要帶 `x-goog-api-key: <金鑰>` 標頭，沒帶回 403。金鑰從環境變數讀（例如 `GEMINI_API_KEY`），**不要寫進程式碼或 commit**。
+- 長時間的工作（生圖、音樂）建議用排隊版：`POST /api/jobs` 拿 `job_id`，再 `GET /api/jobs/{job_id}` 輪詢。
+
+| 端點 | 用途 |
+|---|---|
+| `POST /api/chat` | 文字對話 |
+| `POST /api/chat-file` | 上傳檔案（base64）再問問題 |
+| `POST /api/generate` | 生圖 |
+| `POST /api/edit` | 給參考圖改圖 |
+| `POST /api/music` | 做音樂，可選 `length`、`vocals`、`genre`（值不在清單內回 422 並列出可用值） |
+| `POST /api/video` | 做影片（只有開得出「建立影片」的帳號能用，先看 `/api/capabilities`） |
+| `POST /api/jobs`、`GET /api/jobs/{job_id}` | 排隊版 |
+| `POST /v1beta/models/{model}:generateContent` | 相容官方 Gemini API，`google-genai` SDK 把 `base_url` 指過來就能用 |
+| `GET /api/health`、`GET /api/capabilities` | 服務狀態、各帳號能做什麼 |
+
+每個端點的欄位與範例見 README。
+
 ## 使用方式
 
 ### 文字對話
@@ -22,6 +42,7 @@ gemini-web chat "<prompt>"
 
 # HTTP API
 curl -X POST http://localhost:8070/api/chat \
+  -H "x-goog-api-key: $GEMINI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "<prompt>"}'
 ```
@@ -36,6 +57,7 @@ gemini-web generate "<prompt>" -o <output_path> --no-watermark
 
 # HTTP API
 curl -X POST http://localhost:8070/api/generate \
+  -H "x-goog-api-key: $GEMINI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "<prompt>"}'
 ```
@@ -51,21 +73,21 @@ curl -X POST http://localhost:8070/api/generate \
 
 ## Prompt 撰寫規則
 
-**重要：不要原封不動轉發用戶的請求。** 你應該：
+**重要：不要原封不動轉發使用者的請求。** 你應該：
 
-1. 理解用戶意圖
+1. 理解使用者意圖
 2. 擴寫為詳細的英文 prompt
 3. 描述主體、風格、構圖、色彩、氛圍
 4. 如果需要圖片中出現中文文字，用引號標明：`with text "歡迎光臨"`
 
 ### 範例
 
-用戶說「畫一隻貓」→ 你應該送：
+使用者說「畫一隻貓」→ 你應該送：
 ```
 A cute fluffy orange tabby cat sitting on a windowsill, warm afternoon sunlight streaming in, cozy atmosphere, soft watercolor illustration style, gentle expression with bright curious eyes
 ```
 
-用戶說「做一張開幕海報」→ 你應該送：
+使用者說「做一張開幕海報」→ 你應該送：
 ```
 A modern grand opening poster design with bold typography showing text "盛大開幕" at the top, celebratory confetti and ribbons, red and gold color scheme, professional marketing design, clean layout
 ```

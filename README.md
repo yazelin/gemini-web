@@ -503,7 +503,8 @@ curl -X POST http://localhost:8070/api/music \
 #### 等不到結果時怎麼收工（影片與音樂共用）
 
 - Gemini 回了認得的錯誤字樣（「I seem to be encountering an error」這類）→ 立刻回 `gemini_error` 附原文。
-- Gemini 回了任何文字、之後 **180 秒**內還沒長出媒體卡片 → 回 `gemini_error` 附原文，不等滿逾時。
+- Gemini 回了任何文字、之後 **300 秒**內還沒長出媒體卡片 → 回 `gemini_error` 附原文，不等滿逾時。
+  （成功的音樂實測最長 203 秒，所以不能更短。）
   額度用完、內容被拒的提示字樣程式不一定認得，但「只給字不給卡片」的形狀一樣；
   原文會進 admin history 的 error 欄，撞到新字樣看那裡。
 - 什麼都沒回 → 等到逾時回 `timeout`，連續兩次該 worker 重啟瀏覽器。`gemini_error` 不算進這個計數。

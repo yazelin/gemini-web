@@ -223,6 +223,10 @@ SELECTORS = {
         "button[role='menuitem']:has-text('Create music')"
     ),
 
+    # 音樂模式輸入框下方的三顆選項鈕（2026-10-07 四個帳號實測都有）。
+    # 選項本身在 MUSIC_OPTIONS，點法見 gemini._select_music_options。
+    "music_option_item": ".cdk-overlay-container [role='menuitemradio']",
+
     # 生成出來的音樂。**不是 <audio> 元素** —— Gemini 給的是一張自訂的專輯卡片，
     # 音訊元素要點下播放才會出現。2026-08-22 實測頁面上一個 <audio> 都沒有，
     # 診斷的按鈕清單裡才看到 aria-label 是「播放音樂」與「下載歌曲」。
@@ -262,3 +266,33 @@ SELECTORS = {
         "generated-video button[aria-label*='Download']"
     ),
 }
+
+
+# 音樂模式的三顆選項鈕：API 欄位值 → 介面上的中文字。
+# 2026-10-07 用 worker 2 實測抓下來的清單；三顆鈕都是 menuitemradio，各選一個。
+# 不填該欄位就不點，等於介面預設（長度=標準、人聲與類型=自訂依提示詞）。
+# ponytail: 只收中文介面；帳號若切英文要再補一欄英文字
+MUSIC_OPTIONS: dict[str, tuple[str, dict[str, str]]] = {
+    "length": ("長度", {"short": "簡短", "standard": "標準"}),
+    "vocals": ("人聲", {"vocals": "人聲", "instrumental": "純音樂"}),
+    "genre": ("類型", {
+        "pop": "流行", "hiphop": "嘻哈與饒舌", "rock": "搖滾", "kpop": "韓國流行樂",
+        "latin": "拉丁", "electronic": "電子", "rnb": "節奏藍調", "country": "鄉村",
+        "afrobeats": "非洲節奏", "reggae": "雷鬼", "jazz_blues": "爵士藍調",
+        "classical": "古典", "folk": "民謠", "lofi": "Lo-Fi", "acoustic": "原聲",
+        "soundtrack": "電影配樂", "ambient": "氛圍",
+    }),
+}
+
+
+def invalid_music_option(options: dict | None) -> str | None:
+    """回第一個不合法的選項說明；全部合法回 None。空字串視同沒填。"""
+    for key, value in (options or {}).items():
+        if not value:
+            continue
+        if key not in MUSIC_OPTIONS:
+            return f"未知的音樂選項 {key}，可用：{', '.join(MUSIC_OPTIONS)}"
+        allowed = MUSIC_OPTIONS[key][1]
+        if value not in allowed:
+            return f"{key}={value} 不在清單內，可用：{', '.join(allowed)}"
+    return None

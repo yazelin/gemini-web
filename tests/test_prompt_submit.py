@@ -380,9 +380,11 @@ class TestGeminiErrorTextIsSharedByBothPaths:
         assert await gemini._gemini_error_text(page) == ""
 
     def test_media_path_consults_it(self):
+        """等待迴圈現在住在 _wait_for_media_or_text，_generate_media 用它的結果收工"""
         import inspect
+        assert "_gemini_error_text(" in inspect.getsource(gemini._wait_for_media_or_text)
         src = inspect.getsource(gemini._generate_media)
-        assert "_gemini_error_text(" in src
+        assert "_wait_for_media_or_text(" in src
         assert 'return _error("gemini_error"' in src
 
     def test_image_path_shares_the_same_helper(self):

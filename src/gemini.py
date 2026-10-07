@@ -231,20 +231,30 @@ _GENERIC_ERROR_PHRASES = [
 ]
 
 
+async def _latest_reply_text(page: Page) -> str:
+    """最後一則非空的 Gemini 回應文字；讀不到回空字串。
+
+    取「最後一個非空」而不是「最後一個」：答案後面的引用晶片也命中 response
+    選擇器且是空的，只看最後一個會把短答案當成沒回應（PR #57 踩過）。
+    """
+    try:
+        els = await page.query_selector_all(SELECTORS["response"])
+        for el in reversed(els):
+            text = (await el.inner_text()).strip()
+            if text:
+                return text
+    except Exception as e:  # noqa: BLE001 — 讀不到就當沒文字，別擋住主流程
+        logger.debug("讀 Gemini 回應文字失敗：%s", e)
+    return ""
+
+
 async def _gemini_error_text(page: Page) -> str:
     """Gemini 有沒有用文字回了一句通用錯誤；有的話回原文（截斷），沒有回空字串。
 
     只認**明確的錯誤字樣**而不是「有文字就算」：生成成功時 Gemini 也常先吐一段
     說明，用文字有無當終止條件會在東西還在渲染時就誤判成失敗。
     """
-    try:
-        els = await page.query_selector_all(SELECTORS["response"])
-        if not els:
-            return ""
-        text = (await els[-1].inner_text()).strip()
-    except Exception as e:  # noqa: BLE001 — 讀不到就當沒錯誤，別擋住主流程
-        logger.debug("讀 Gemini 回應文字失敗：%s", e)
-        return ""
+    text = await _latest_reply_text(page)
     low = text.lower()
     for phrase in _GENERIC_ERROR_PHRASES:
         if phrase.lower() in low:
@@ -772,6 +782,49 @@ async def submit_prompt(page: Page, input_el, label: str,
             "可能是 Gemini 版面又改了（診斷截圖見 diagnostics/）")
 
 
+# Gemini 回了一段文字之後，媒體卡片最多再等這麼久。成功時文字先出、卡片後到，
+# 送出到卡片實測 46 到 101 秒（含進模式），所以 180 秒不會誤殺成功案例；
+# 但「回了程式不認得的字、卡片永遠不來」（額度用完的提示多半長這樣）就不用
+# 等滿 548 秒。2026-09-22 有三筆這樣各等了 248 秒以上。
+# ponytail: 額度用完的確切字樣還沒人看過，撞到一次拿診斷截圖再加進 _GENERIC_ERROR_PHRASES
+_MEDIA_STALL_AFTER_TEXT_SECONDS = 180
+
+
+async def _wait_for_media_or_text(page: Page, result_key: str, wait_budget: float,
+                                  stall_seconds: float = _MEDIA_STALL_AFTER_TEXT_SECONDS,
+                                  poll_seconds: float = 5):
+    """等媒體元素出現。回 (元素, 文字)：拿到元素就 (el, "")；Gemini 用文字收場就
+    (None, 原文)；等到預算用完兩個都空。
+
+    三種提早收工的情況：
+    1. Gemini 回了認得的錯誤字樣（_GENERIC_ERROR_PHRASES）→ 立刻收工。
+       2026-08-31 它幾秒就回「I seem to be encountering an error」，這條線當時
+       沒接上，照樣空等 468 秒。
+    2. Gemini 回了任何文字，之後 stall_seconds 內媒體還是沒出現 → 帶原文收工。
+       額度用完、內容被拒之類的提示字樣程式不一定認得，但「只給字不給卡片」
+       這個形狀是一樣的。
+    3. 媒體出現 → 成功，就算旁邊有錯誤字樣也是成功。
+    """
+    deadline = time.monotonic() + wait_budget
+    text_seen_at: float | None = None
+    said = ""
+    while time.monotonic() < deadline:
+        el = await page.query_selector(SELECTORS[result_key])
+        if el:
+            return el, ""
+        said = await _gemini_error_text(page)
+        if said:
+            return None, said
+        text = await _latest_reply_text(page)
+        if text:
+            if text_seen_at is None:
+                text_seen_at = time.monotonic()
+            elif time.monotonic() - text_seen_at >= stall_seconds:
+                return None, text[:200]
+        await asyncio.sleep(poll_seconds)
+    return None, ""
+
+
 async def _generate_media(page: Page, prompt: str, timeout: int,
                           worker_id: int | None, *, mode_key: str, mode_label: str,
                           result_key: str, download_key: str, field: str,
@@ -846,26 +899,12 @@ async def _generate_media(page: Page, prompt: str, timeout: int,
         if setup_elapsed > 10:
             logger.info("進模式花了 %.0f 秒，結果等待預算縮為 %.0f 秒",
                         setup_elapsed, wait_budget)
-        deadline = time.monotonic() + wait_budget
-        video_el = None
-        said = ""
-        while time.monotonic() < deadline:
-            video_el = await page.query_selector(SELECTORS[result_key])
-            if video_el:
-                break
-            # Gemini 用文字回了錯誤就代表它不打算給媒體了，別再等下去。
-            # 2026-08-31：它 幾秒 就回了「I seem to be encountering an error」
-            # ——那句話本來就在 _GENERIC_ERROR_PHRASES 裡，圖片那條線看到會立刻
-            # 收工，但這條線當時沒接上，於是照樣空等了 468 秒才回 timeout。
-            said = await _gemini_error_text(page)
-            if said:
-                break
-            await asyncio.sleep(5)
+        video_el, said = await _wait_for_media_or_text(page, result_key, wait_budget)
 
         elapsed = round(time.time() - start, 1)
         if said and not video_el:
             await dump_page_state(page, f"{tag}-refused", worker_id)
-            logger.warning("%s：Gemini 回了錯誤，不再空等（已等 %.0f 秒）：%s",
+            logger.warning("%s：Gemini 回了文字但沒給媒體，不再空等（已等 %.0f 秒）：%s",
                            mode_label, elapsed, said[:120])
             return _error("gemini_error", f"Gemini 回：{said}", elapsed)
         if not video_el:

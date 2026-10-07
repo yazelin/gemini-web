@@ -86,7 +86,7 @@ print(client.models.generate_content(model="gemini-2.5-flash", contents="你好"
 
 要讓 AI agent 自己會用，叫它讀這個 repo 的 [`AGENTS.md`](AGENTS.md)（端點、金鑰、錯誤碼都在裡面）。Claude Code、Gemini CLI 在 `gemini-web install` 時會自動裝 slash commands。
 
-GitHub Actions 這類在別台機器上跑的程式連不到你的 `localhost`，要讓它們用，得把服務放在有網域和 HTTPS 的反向代理後面（見下方 systemd 與 `ADMIN_URL_PREFIX`）。沒有的話，直接用官方 Gemini API 最省事。
+GitHub Actions 這類在別台機器上跑的程式連不到你的 `localhost`。要讓它們用，服務需要一個外面連得到的網址（最好是 HTTPS）：可以是自己的網域加反向代理（例如 nginx，見下方 systemd 與 `ADMIN_URL_PREFIX`），也可以用 Cloudflare Tunnel、Tailscale Funnel、ngrok 這類通道，不用自己開 port（這幾種作者沒有實測過）。對外之前一定要設金鑰。都不想弄的話，直接用官方 Gemini API 最省事。
 
 ## 使用方式
 

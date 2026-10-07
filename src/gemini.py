@@ -783,11 +783,11 @@ async def submit_prompt(page: Page, input_el, label: str,
 
 
 # Gemini 回了一段文字之後，媒體卡片最多再等這麼久。成功時文字先出、卡片後到，
-# 送出到卡片實測 46 到 101 秒（含進模式），所以 180 秒不會誤殺成功案例；
-# 但「回了程式不認得的字、卡片永遠不來」（額度用完的提示多半長這樣）就不用
-# 等滿 548 秒。2026-09-22 有三筆這樣各等了 248 秒以上。
+# 送出到卡片實測 46 到 101 秒，但 2026-10-07 部署後第一筆就跑了 203 秒（成功），
+# 原本的 180 秒差八秒就把它誤殺。改 300：成功案例留足空間，「回了程式不認得的字、
+# 卡片永遠不來」（額度用完的提示多半長這樣）仍從 548 秒縮到 5 分鐘。
 # ponytail: 額度用完的確切字樣還沒人看過，撞到一次拿診斷截圖再加進 _GENERIC_ERROR_PHRASES
-_MEDIA_STALL_AFTER_TEXT_SECONDS = 180
+_MEDIA_STALL_AFTER_TEXT_SECONDS = 300
 
 
 async def _wait_for_media_or_text(page: Page, result_key: str, wait_budget: float,

@@ -47,7 +47,7 @@ async def _wait_status(c, job_id, want, tries=200):
 
 def _fake_dispatch(release: asyncio.Event, result: dict, seen: list):
     """拿到 worker 時呼叫 on_acquire（跟真的 worker_pool 一樣），等 release 才回結果。"""
-    async def dispatch(kind, prompt, model, timeout, extra=None, ctx=None):
+    async def dispatch(kind, prompt, model, timeout, extra=None, ctx=None, **kw):
         seen.append({"kind": kind, "prompt": prompt, "timeout": timeout, "extra": extra})
         ctx["worker_id"] = 0
         ctx["on_acquire"](0)
@@ -178,3 +178,78 @@ def test_queued_jobs_are_failed_on_startup():
     assert n == 1
     row = jobs.get(a, "static")
     assert row["status"] == "failed" and "重啟" in row["error"]
+
+
+REFUSAL = {"success": False, "error": "gemini_error",
+           "message": "Gemini 回：I am unable to generate or play audio files directly here"}
+AUDIO = {"success": True, "audio": "QUJD", "mime": "audio/mpeg"}
+
+
+def _scripted_dispatch(results: list, calls: list):
+    """依序回 results；第 n 次拿 worker n（避開 exclude 裡的），記下每次的 exclude。"""
+    async def dispatch(kind, prompt, model, timeout, extra=None, ctx=None, exclude=None):
+        wid = min({0, 1, 2, 3} - (exclude or set()))
+        calls.append({"wid": wid, "exclude": exclude})
+        ctx["worker_id"] = wid
+        ctx["on_acquire"](wid)
+        return results[len(calls) - 1]
+    return dispatch
+
+
+@pytest.mark.asyncio
+async def test_refusal_retries_once_on_another_worker(pool):
+    calls = []
+    pool.dispatch = _scripted_dispatch([REFUSAL, AUDIO], calls)
+    async with _client() as c:
+        r = await c.post("/api/music/jobs", headers=H, json={"prompt": "x"})
+        done = await _wait_status(c, r.json()["id"], {"succeeded", "failed"})
+    assert done["status"] == "succeeded" and done["response"]["audio"] == "QUJD"
+    assert [x["wid"] for x in calls] == [0, 1]
+    assert calls[0]["exclude"] is None and calls[1]["exclude"] == {0}
+
+
+@pytest.mark.asyncio
+async def test_two_refusals_fail_the_job(pool):
+    calls = []
+    pool.dispatch = _scripted_dispatch([REFUSAL, REFUSAL, AUDIO], calls)
+    async with _client() as c:
+        r = await c.post("/api/music/jobs", headers=H, json={"prompt": "x"})
+        done = await _wait_status(c, r.json()["id"], {"succeeded", "failed"})
+    assert done["status"] == "failed" and "unable to generate" in done["error"]
+    assert len(calls) == 2, "只重試一次"
+
+
+@pytest.mark.asyncio
+async def test_other_errors_are_not_retried(pool):
+    calls = []
+    pool.dispatch = _scripted_dispatch([{"success": False, "error": "browser_error", "message": "x"}, AUDIO], calls)
+    async with _client() as c:
+        r = await c.post("/api/music/jobs", headers=H, json={"prompt": "x"})
+        done = await _wait_status(c, r.json()["id"], {"succeeded", "failed"})
+    assert done["status"] == "failed" and len(calls) == 1
+
+
+class TestPoolExclude:
+    """worker_pool.dispatch 的 exclude：避開上一次的帳號，避開後沒人才退回原名單"""
+
+    async def _run(self, capable, exclude):
+        from src.worker_pool import WorkerPool
+        wp = WorkerPool(worker_count=4, max_waiting=5)
+        seen = {}
+
+        async def fake_acquire_and_run(kind, prompt, model, timeout, extra, ctx, allowed):
+            seen["allowed"] = allowed
+            return AUDIO
+        wp.ensure_capabilities = AsyncMock()
+        wp.capable_ids = lambda kind: set(capable)
+        wp._acquire_and_run = fake_acquire_and_run
+        await wp.dispatch("music", "p", "", 10, exclude=exclude)
+        return seen["allowed"]
+
+    @pytest.mark.asyncio
+    async def test_excludes_the_failed_worker(self):
+        assert await self._run({0, 1, 2, 3}, {0}) == {1, 2, 3}
+
+    @pytest.mark.asyncio
+    async def test_single_capable_worker_is_reused(self):
+        assert await self._run({2}, {2}) == {2}

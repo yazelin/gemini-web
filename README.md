@@ -555,7 +555,7 @@ curl -X POST http://localhost:8070/api/music \
   額度用完、內容被拒的提示字樣程式不一定認得，但「只給字不給卡片」的形狀一樣；
   原文會進 admin history 的 error 欄，撞到新字樣看那裡。
 - 什麼都沒回 → 等到逾時回 `timeout`，連續兩次該 worker 重啟瀏覽器。`gemini_error` 不算進這個計數。
-- 一筆失敗不會自動換帳號重跑，呼叫端自己重試，下一筆 round-robin 會輪到別的帳號。對照表在 `src/selectors.py` 的 `MUSIC_OPTIONS`，
+- 同步 `/api/music` 一筆失敗不會自動換帳號重跑（排隊版作曲遇到 `gemini_error` 會換帳號重試一次，見下節），呼叫端自己重試，下一筆 round-robin 會輪到別的帳號。對照表在 `src/selectors.py` 的 `MUSIC_OPTIONS`，
 是 2026-10-07 用四個帳號之一實測抓的中文介面字；Gemini 改字或帳號切英文介面時要補。
 
 能力偵測與影片共用同一套：`/api/capabilities` 會同時報 `video` 與 `music` 兩種，
@@ -597,6 +597,9 @@ curl http://localhost:8070/api/jobs/job_… -H "x-goog-api-key: YOUR_KEY"
 - 失敗時 `response` 是 `null`，`error` 寫原因，例如 `gemini_error: …`、
   `408: 請求超時（600秒）`、`503: 沒有任何帳號…`、`429: 佇列已滿…`。
 - 參數錯（`genre` 不在清單內這類）送單時就回 **422**，不會建 job。
+- Gemini 回字拒答（`gemini_error`，例如「I am unable to generate or play audio files…」）時，
+  自動換另一個有作曲能力的帳號重試一次，狀態維持 `running`；兩次都拒答才 `failed`。
+  只有一個帳號做得到時就在同一個帳號重試。逾時、`browser_error` 這類不重試。
 - 作曲 job 一次只跑一首，其他的維持 `queued` 排隊；`timeout` 從輪到它才開始算。
   排隊與進行中的作曲 job 合計達 `QUEUE_MAX_SIZE` 筆時，送單回 **429**。
 - 只有送單的那把金鑰查得到這個 job，別的金鑰查一律 404。

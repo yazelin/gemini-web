@@ -289,6 +289,13 @@ class WorkerPool:
             # 讓呼叫端在「逾時被取消」時仍知道是哪個 worker(否則 admin history
             # 的失敗列 worker 欄是空的,查不出兇手)
             ctx["worker_id"] = wid
+            # 排隊版作曲 job 要知道「真的輪到它了」才把狀態從 queued 改成 running
+            on_acquire = ctx.get("on_acquire")
+            if callable(on_acquire):
+                try:
+                    on_acquire(wid)
+                except Exception:  # noqa: BLE001 — 回報狀態失敗不該讓 worker 漏還
+                    logger.exception("on_acquire 回呼失敗")
         finished = False
         try:
             result = await self._run(wid, kind, prompt, model, timeout, extra)

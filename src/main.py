@@ -41,6 +41,9 @@ async def lifespan(app: FastAPI):
     stale = jobs.fail_stale_running()
     if stale:
         logger.warning("啟動時把 %d 筆卡在 running 的 job 標成 failed", stale)
+    orphaned = jobs.fail_stale_queued()
+    if orphaned:
+        logger.warning("啟動時把 %d 筆還在排隊的 job 標成 failed", orphaned)
     worker_pool.set_mode(admin_db.get_setting("dispatch_mode", "round-robin"))
     await worker_pool.start()
     logger.info(
@@ -134,6 +137,7 @@ async def _dispatch_and_log(
     extra: dict | None = None,
     request: Request | None = None,
     api_key_name: str | None = None,
+    on_acquire=None,
 ) -> dict:
     """worker_pool.dispatch 包一層記到 admin history db（見 /admin/requests）。
 
@@ -149,6 +153,9 @@ async def _dispatch_and_log(
     # 只能靠 ctx 才知道是哪個 worker —— 沒有它,admin history 的失敗列 worker 欄
     # 永遠是空的,壞掉的 worker 就查不出來(2026-07-30 worker 3 就查了很久)。
     ctx: dict = {}
+    if on_acquire is not None:
+        # 排隊版作曲 job 用：拿到 worker 的那一刻 worker_pool 會呼叫它
+        ctx["on_acquire"] = on_acquire
     try:
         result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra, ctx=ctx)
     except Exception as e:
@@ -366,14 +373,9 @@ class MusicRequest(BaseModel):
     genre: str = ""
 
 
-@app.post("/api/music")
-async def api_music(req: MusicRequest, request: Request):
-    """產生音樂
-
-    走 Gemini 網頁工具選單裡的「創作音樂」，跟影片同一條路。音檔以 base64
-    回傳（欄位 `audio`）。length / vocals / genre 對應輸入框下方三顆選項鈕。
-    """
-    _verify_api_key(request, None)
+def _music_extra(req: MusicRequest) -> dict | None:
+    """驗 length / vocals / genre（不合法回 422），組出交給 worker_pool 的 extra。
+    同步 /api/music 與排隊版作曲 job 共用，兩邊收的參數一模一樣。"""
     options = {"length": req.length, "vocals": req.vocals, "genre": req.genre}
     bad = invalid_music_option(options)
     if bad:
@@ -383,10 +385,22 @@ async def api_music(req: MusicRequest, request: Request):
         extra.update(file=req.file, filename=req.filename)
     if any(options.values()):
         extra["options"] = {k: v for k, v in options.items() if v}
+    return extra or None
+
+
+@app.post("/api/music")
+async def api_music(req: MusicRequest, request: Request):
+    """產生音樂
+
+    走 Gemini 網頁工具選單裡的「創作音樂」，跟影片同一條路。音檔以 base64
+    回傳（欄位 `audio`）。length / vocals / genre 對應輸入框下方三顆選項鈕。
+    """
+    _verify_api_key(request, None)
+    extra = _music_extra(req)
     try:
         return await _dispatch_and_log(
             "music", req.prompt, "", req.timeout,
-            extra=extra or None, request=request)
+            extra=extra, request=request)
     except NoCapableWorkerError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except QueueFullError:
@@ -842,6 +856,10 @@ _background_tasks: set[asyncio.Task] = set()
 async def create_job(request: Request, key: str = Query(default=None)):
     _verify_api_key(request, key)
     body = await request.json()
+    if isinstance(body, dict) and body.get("type") == "music":
+        # 作曲也能走這個入口：body 欄位跟 /api/music 一樣，多一個 type
+        body.pop("type")
+        return _submit_music_job(_parse_music_body(body), request)
     # settings 沒有 default_image_model 這個欄位（查過 config.py 確認過，
     # 實際圖片模型 id 定義在 GEMINI_OFFICIAL_MODEL/selectors.py），這裡沒有
     # 現成常數可引用，就用字面值當 fallback；消費端多半會自己帶 model。
@@ -864,6 +882,7 @@ async def get_job(job_id: str, request: Request, key: str = Query(default=None))
         raise HTTPException(status_code=404, detail="job not found")
     return {
         "id": row["id"],
+        "type": "music" if row["model"] == MUSIC_JOB_MODEL else "generate",
         "status": row["status"],
         "response": row["response"],
         "error": row["error"],
@@ -881,3 +900,74 @@ async def _run_job(job_id: str, model: str, body: dict, key_name: str | None) ->
     except Exception as e:  # noqa: BLE001 — job 失敗要記下來，不能讓它卡在 running
         logger.exception("job %s 失敗", job_id)
         jobs.fail(job_id, f"{type(e).__name__}: {e}")
+
+
+# ── 排隊版作曲 ─────────────────────────────────────────────────────
+# 一首歌 60 到 300 秒以上，同步 /api/music 撐不過 Cloudflare 對外連線約 100 秒的
+# 上限（524）。改成送出拿 id、之後用 GET /api/jobs/{id} 輪詢，跟畫圖 job 同一張表、
+# 同一個查詢端點；jobs.model 欄填 MUSIC_JOB_MODEL 分辨是作曲。
+#
+# 作曲 job 一次只跑一首（_music_job_slot），其他的在這裡排隊、狀態維持 queued，
+# 拿到 worker 那一刻才改 running。timeout 從輪到它才開始算，不會被前一首吃掉。
+MUSIC_JOB_MODEL = "music"
+_music_job_slot = asyncio.Semaphore(1)
+_music_jobs_pending = 0
+
+
+def _parse_music_body(body: dict) -> MusicRequest:
+    try:
+        return MusicRequest(**body)
+    except Exception as e:  # pydantic ValidationError / TypeError
+        raise HTTPException(status_code=422, detail=f"作曲參數不正確：{e}")
+
+
+def _submit_music_job(req: MusicRequest, request: Request) -> dict:
+    global _music_jobs_pending
+    extra = _music_extra(req)  # 參數錯在送單時就回 422，不要等到輪詢才知道
+    if _music_jobs_pending >= settings.queue_max_size:
+        raise HTTPException(status_code=429, detail="作曲排隊已滿，請稍後再試")
+    key_name = _identify_caller(request)
+    # 參考音檔（base64）不寫進 DB，只留檔名
+    stored = req.model_dump(exclude={"file"})
+    job_id = jobs.create(MUSIC_JOB_MODEL, stored, key_name)
+    _music_jobs_pending += 1
+    task = asyncio.create_task(_run_music_job(job_id, req, extra, key_name))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return {"id": job_id, "status": "queued"}
+
+
+@app.post("/api/music/jobs", status_code=202)
+async def create_music_job(req: MusicRequest, request: Request, key: str = Query(default=None)):
+    """排隊版作曲：立刻回 {id, status: "queued"}，之後 GET /api/jobs/{id} 查。
+    欄位跟 /api/music 完全一樣（prompt、timeout、length、vocals、genre、file、filename）。"""
+    _verify_api_key(request, key)
+    return _submit_music_job(req, request)
+
+
+async def _run_music_job(job_id: str, req: MusicRequest, extra: dict | None,
+                         key_name: str | None) -> None:
+    global _music_jobs_pending
+    try:
+        async with _music_job_slot:
+            result = await _dispatch_and_log(
+                "music", req.prompt, "", req.timeout, extra=extra,
+                api_key_name=key_name,
+                on_acquire=lambda _wid: jobs.mark_running(job_id))
+        if result.get("success") and result.get("audio"):
+            jobs.finish(job_id, result)
+        else:
+            code = result.get("error") or "no_audio"
+            msg = result.get("message") or "沒有拿到音檔"
+            jobs.fail(job_id, f"{code}: {msg}")
+    except NoCapableWorkerError as e:
+        jobs.fail(job_id, f"503: {e}")
+    except QueueFullError:
+        jobs.fail(job_id, "429: 佇列已滿，請稍後再試")
+    except asyncio.TimeoutError:
+        jobs.fail(job_id, f"408: 請求超時（{req.timeout}秒）")
+    except Exception as e:  # noqa: BLE001 — job 失敗要記下來，不能讓它卡在 running
+        logger.exception("作曲 job %s 失敗", job_id)
+        jobs.fail(job_id, f"{type(e).__name__}: {e}")
+    finally:
+        _music_jobs_pending -= 1

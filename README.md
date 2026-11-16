@@ -561,6 +561,50 @@ curl -X POST http://localhost:8070/api/music \
 能力偵測與影片共用同一套：`/api/capabilities` 會同時報 `video` 與 `music` 兩種，
 派工也各自只挑做得到的帳號。
 
+#### 排隊版：先送後查（2026-11-16 起）
+
+一首歌要 60 到 300 秒，同步的 `/api/music` 撐不過 Cloudflare 這類代理約 100 秒的
+對外連線上限（524）。排隊版立刻回 job id，之後輪詢；欄位跟 `/api/music` 完全一樣
+（`prompt`、`timeout`、`length`、`vocals`、`genre`、`file`、`filename`）。
+同步的 `/api/music` 照舊可用。
+
+```bash
+# 送單：回 202 {"id": "job_…", "status": "queued"}
+curl -X POST http://localhost:8070/api/music/jobs \
+  -H "Content-Type: application/json" -H "x-goog-api-key: YOUR_KEY" \
+  -d '{"prompt": "深夜寫程式的背景音", "vocals": "instrumental", "timeout": 720}'
+
+# 也可以走通用的 /api/jobs，多帶 "type": "music"
+curl -X POST http://localhost:8070/api/jobs \
+  -H "Content-Type: application/json" -H "x-goog-api-key: YOUR_KEY" \
+  -d '{"type": "music", "prompt": "深夜寫程式的背景音"}'
+
+# 查進度（跟畫圖 job 同一個端點）
+curl http://localhost:8070/api/jobs/job_… -H "x-goog-api-key: YOUR_KEY"
+```
+
+查詢回：
+
+```json
+{"id": "job_…", "type": "music", "status": "succeeded",
+ "response": {"success": true, "audio": "<base64 mp3>", "mime": "audio/mpeg",
+              "prompt": "…", "elapsed_seconds": 142.3},
+ "error": null, "created_at": "…"}
+```
+
+- `status`：`queued`（排隊中）→ `running`（已拿到 worker）→ `succeeded` 或 `failed`。
+- 成功時 `response` 就是同步 `/api/music` 會回的那包，`audio` 是 base64。
+- 失敗時 `response` 是 `null`，`error` 寫原因，例如 `gemini_error: …`、
+  `408: 請求超時（600秒）`、`503: 沒有任何帳號…`、`429: 佇列已滿…`。
+- 參數錯（`genre` 不在清單內這類）送單時就回 **422**，不會建 job。
+- 作曲 job 一次只跑一首，其他的維持 `queued` 排隊；`timeout` 從輪到它才開始算。
+  排隊與進行中的作曲 job 合計達 `QUEUE_MAX_SIZE` 筆時，送單回 **429**。
+- 只有送單的那把金鑰查得到這個 job，別的金鑰查一律 404。
+- 服務重啟時，`running` 與 `queued` 的 job 都會被標成 `failed`（背景工作只活在記憶體裡），
+  呼叫端看到就重送。
+- job 結果跟畫圖 job 一樣存在 `admin.db` 的 `jobs` 表，目前不會自動清；音檔另外照
+  `IMAGE_RETENTION_DAYS` 存一份在產出目錄，admin history 連得到。
+
 #### 音樂參考檔（試過，不行）
 
 `/api/music` 收得下 `file`（base64）與 `filename` 兩個可選欄位，會把音檔掛到

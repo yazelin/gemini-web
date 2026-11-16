@@ -27,6 +27,7 @@ which gemini-web   # CLI 模式：確認指令存在
 | `POST /api/music` | 做音樂，可選 `length`、`vocals`、`genre`（值不在清單內回 422 並列出可用值） |
 | `POST /api/video` | 做影片（只有開得出「建立影片」的帳號能用，先看 `/api/capabilities`） |
 | `POST /api/jobs`、`GET /api/jobs/{job_id}` | 排隊版 |
+| `POST /api/music/jobs`（或 `POST /api/jobs` 帶 `"type": "music"`） | 排隊版作曲，欄位同 `/api/music`，用 `GET /api/jobs/{job_id}` 查 |
 | `POST /v1beta/models/{model}:generateContent` | 相容官方 Gemini API，`google-genai` SDK 把 `base_url` 指過來就能用 |
 | `GET /api/health`、`GET /api/capabilities` | 服務狀態、各帳號能做什麼 |
 

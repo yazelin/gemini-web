@@ -103,3 +103,14 @@ def fail_stale_running() -> int:
             ("服務重啟，這筆生成沒有完成", _now()),
         )
         return cur.rowcount
+
+
+def fail_stale_queued() -> int:
+    """啟動時呼叫。job 的背景工作只活在記憶體，重啟後還在排隊的也不會再被撿起來。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE jobs SET status = 'failed', error = ?, updated_at = ?"
+            " WHERE status = 'queued'",
+            ("服務重啟，這筆還在排隊的生成沒有開始", _now()),
+        )
+        return cur.rowcount

@@ -138,6 +138,7 @@ async def _dispatch_and_log(
     request: Request | None = None,
     api_key_name: str | None = None,
     on_acquire=None,
+    exclude: set[int] | None = None,
 ) -> dict:
     """worker_pool.dispatch 包一層記到 admin history db（見 /admin/requests）。
 
@@ -157,7 +158,9 @@ async def _dispatch_and_log(
         # 排隊版作曲 job 用：拿到 worker 的那一刻 worker_pool 會呼叫它
         ctx["on_acquire"] = on_acquire
     try:
-        result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra, ctx=ctx)
+        dispatch_kw = {"exclude": exclude} if exclude else {}
+        result = await worker_pool.dispatch(kind, prompt, model, timeout, extra=extra, ctx=ctx,
+                                            **dispatch_kw)
     except Exception as e:
         admin_db.record(
             kind=kind, prompt=prompt, status="failed",
@@ -950,10 +953,28 @@ async def _run_music_job(job_id: str, req: MusicRequest, extra: dict | None,
     global _music_jobs_pending
     try:
         async with _music_job_slot:
-            result = await _dispatch_and_log(
-                "music", req.prompt, "", req.timeout, extra=extra,
-                api_key_name=key_name,
-                on_acquire=lambda _wid: jobs.mark_running(job_id))
+            # Gemini 偶爾在有「創作音樂」的帳號上也回字拒答（「I am unable to generate
+            # or play audio files…」，2026-11-16 .11 實測），換一個帳號通常就好。
+            # 跟 generateContent 的 JSON 重跑一樣只重試一次：救偶發，不跟模型盧。
+            # 逾時、沒有帳號、佇列滿這類不是拒答的錯，不重試。
+            used: set[int] = set()
+
+            def _acquired(wid: int) -> None:
+                used.add(wid)
+                jobs.mark_running(job_id)
+
+            for attempt in (1, 2):
+                result = await _dispatch_and_log(
+                    "music", req.prompt, "", req.timeout, extra=extra,
+                    api_key_name=key_name, on_acquire=_acquired,
+                    exclude=set(used) or None)
+                if result.get("success") and result.get("audio"):
+                    break
+                if attempt == 1 and result.get("error") == "gemini_error":
+                    logger.warning("作曲 job %s 被 worker %s 拒答，換帳號重試一次：%s",
+                                   job_id, sorted(used), str(result.get("message"))[:120])
+                    continue
+                break
         if result.get("success") and result.get("audio"):
             jobs.finish(job_id, result)
         else:

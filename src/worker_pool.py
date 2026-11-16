@@ -97,7 +97,8 @@ class WorkerPool:
             logger.info("Worker %d 已關閉", i)
 
     async def dispatch(self, kind: str, prompt: str, model: str, timeout: int,
-                       extra: dict | None = None, ctx: dict | None = None) -> dict:
+                       extra: dict | None = None, ctx: dict | None = None,
+                       exclude: set[int] | None = None) -> dict:
         """分配請求到空閒 worker，全忙則等待
 
         Args:
@@ -116,6 +117,9 @@ class WorkerPool:
         if kind in ("video", "music"):
             await self.ensure_capabilities(kind)
             allowed = self.capable_ids(kind)
+            # 重試時避開上一次失敗的帳號；避開後一個都不剩就還是用原本那些
+            if exclude and allowed - exclude:
+                allowed = allowed - exclude
             if not allowed:
                 item = {"video": "建立影片", "music": "創作音樂"}[kind]
                 raise NoCapableWorkerError(
